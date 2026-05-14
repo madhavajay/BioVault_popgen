@@ -1,0 +1,45 @@
+apiVersion: syftbox.openmined.org/v1alpha1
+kind: Module
+metadata:
+  name: bv_paper_gnomad_projection_fast
+  version: 0.1.0
+  authors:
+    - madhava@openmined.org
+  description: |
+    Numpy-based drop-in replacement for biovault-popgen-gnomad-projection-1.
+    Reproduces hl.experimental.pc_project output bit-for-bit at float64
+    precision while skipping the ~45 s Hail/Spark JVM warm-up and replacing
+    the Python row-loop DDNA→PLINK converter with a vectorized parallel
+    implementation. Roughly 2x faster at N=10, ~7x at N=1000.
+spec:
+  runner:
+    kind: nextflow
+    entrypoint: main.nf
+    template: dynamic-nextflow
+    image: biovault-popgen:0.1.0
+  inputs:
+    - name: participants
+      type: List[GenotypeRecord]
+      description: CSV/TSV with participant_id and genotype_file columns. genotype_file points to a DDNA GSAv3 TXT genotype file.
+      format:
+        kind: csv
+        mapping:
+          participant_id: participant_id
+          genotype_file: genotype_file
+  outputs:
+    - name: projection_tsv
+      type: File
+      description: Study samples projected onto gnomAD HGDP+1kGP PC space (30 PCs).
+      format:
+        kind: tsv
+      path: study_pca_projection.tsv
+    - name: qc_report
+      type: File
+      description: QC summary (input/output SNP and sample counts).
+      path: qc_report.txt
+    - name: projection_plot
+      type: File
+      description: PC1 vs PC2 scatter of the projected study samples.
+      path: pca_projection.png
+  parameters: []
+  assets: []

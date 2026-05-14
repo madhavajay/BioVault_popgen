@@ -46,7 +46,10 @@ RUN mkdir -p /opt/biovault/reference/pca_loadings /opt/biovault/scripts && \
 COPY .docker/reference/pca_loadings/loadings_variants.tsv ${LOADINGS_VARIANTS_TSV}
 COPY .docker/reference/pca_loadings/gnomad.v3.1.pca_loadings.ht ${LOADINGS_HT}
 COPY 03_individual_level/gnomad_projection/scripts /opt/biovault/scripts/gnomad_projection
-RUN chmod +x /opt/biovault/scripts/gnomad_projection/*.sh
+COPY 03_individual_level/gnomad_projection_fast/scripts /opt/biovault/scripts/gnomad_projection_fast
+COPY 03_individual_level/pca_qc_fast/scripts /opt/biovault/scripts/pca_qc_fast
+RUN chmod +x /opt/biovault/scripts/gnomad_projection/*.sh \
+             /opt/biovault/scripts/gnomad_projection_fast/*.sh
 
 WORKDIR /work
 

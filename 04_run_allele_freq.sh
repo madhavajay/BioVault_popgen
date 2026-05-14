@@ -43,14 +43,18 @@ done
 
 mkdir -p "${OUT_DIR}" "${BVLR_DIR}"
 
-declare -A ISLAND_LABEL=(
-    [BVI]=BVI
-    [TT]=TT
-    [Bahamas]=bahamas
-    [Barbados]=barbados
-    [Bermuda]=bermuda
-    [StLucia]=stlucia
-)
+ISLANDS=(BVI TT Bahamas Barbados Bermuda StLucia)
+island_label() {
+    case "$1" in
+        BVI)      echo BVI ;;
+        TT)       echo TT ;;
+        Bahamas)  echo bahamas ;;
+        Barbados) echo barbados ;;
+        Bermuda)  echo bermuda ;;
+        StLucia)  echo stlucia ;;
+        *)        return 1 ;;
+    esac
+}
 
 # ── Stage 1: emit-long per participant ────────────────────────────────────────
 TODO=$(mktemp)
@@ -94,8 +98,8 @@ fi
 
 # ── Stage 2: aggregate per island ─────────────────────────────────────────────
 echo "Stage 2: aggregate per island ..."
-for ISLAND in "${!ISLAND_LABEL[@]}"; do
-    LABEL="${ISLAND_LABEL[${ISLAND}]}"
+for ISLAND in "${ISLANDS[@]}"; do
+    LABEL="$(island_label "${ISLAND}")"
     LIST="${BVLR_DIR}/.list_${ISLAND}.txt"
 
     awk -F'\t' -v island="${ISLAND}" '$2 == island { print $1 }' "${TODO}.mapping" \

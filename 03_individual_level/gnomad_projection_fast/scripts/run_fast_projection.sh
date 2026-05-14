@@ -71,33 +71,9 @@ if [ ! -s "${LOADINGS_NPZ}" ]; then
 fi
 export LOADINGS_NPZ
 
-log "STEP 1: DDNA -> PLINK"
-python3 "${SLOW_SCRIPTS}/convert_ddna_to_plink.py" \
-    "${DATA_DIR}" "${WORKING}/study_raw" "${MIN_GS}"
-
-WORKING="${WORKING}" python3 - <<'FILTER'
-import os
-from pathlib import Path
-working = Path(os.environ["WORKING"])
-inp = working / "study_raw.tped"
-out = working / "study_raw.biallelic.tped"
-n_total = n_keep = 0
-with inp.open() as f, out.open("w") as fo:
-    for line in f:
-        n_total += 1
-        parts = line.rstrip("\n").split()
-        observed = {a for a in parts[4:] if a not in {"0", "N", "-", "."}}
-        if len(observed) <= 2:
-            fo.write(line)
-            n_keep += 1
-print(f"Filtered TPED: {n_keep}/{n_total} biallelic SNPs kept")
-FILTER
-
-plink2 --tped "${WORKING}/study_raw.biallelic.tped" \
-       --tfam "${WORKING}/study_raw.tfam" \
-       --make-bed --out "${WORKING}/study_raw" \
-       --threads "${THREADS}" --allow-extra-chr
-rm -f "${WORKING}/study_raw.tped"
+log "STEP 1: DDNA -> PLINK bed/bim/fam (vectorized, no tped intermediary)"
+python3 "${SCRIPT_DIR}/fast_convert_ddna_to_plink.py" \
+    "${DATA_DIR}" "${WORKING}/study_raw" --min-gs "${MIN_GS}" --workers "${THREADS}"
 
 log "STEP 2: QC"
 plink2 --bfile "${WORKING}/study_raw" --rm-dup exclude-all \
