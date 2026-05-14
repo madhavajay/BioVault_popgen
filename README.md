@@ -42,6 +42,60 @@ Numbers are dependency order, not strict sequence — `03` and `04` are independ
 
 ## Quick start
 
+### Docker
+
+The easiest way to get a reproducible environment for the whole repo is the
+single Docker image:
+
+```bash
+./build_docker.sh
+```
+
+By default this builds `biovault-popgen:latest` for `linux/amd64`. You can
+override those without editing the script:
+
+```bash
+IMAGE=biovault-popgen:dev PLATFORM=linux/amd64 ./build_docker.sh
+```
+
+The image includes the conda environment, PLINK/ADMIXTURE/Hail tooling, the GCS
+connector needed by Hail, and the baked gnomAD v3.1 PCA loadings:
+
+```bash
+/opt/biovault/reference/pca_loadings/loadings_variants.tsv         # variant list (study-side pruning)
+/opt/biovault/reference/pca_loadings/gnomad.v3.1.pca_loadings.ht/  # full Hail Table (projection)
+```
+
+`build_docker.sh` keeps an inspectable host-side cache at:
+
+```bash
+.docker/reference/pca_loadings/gnomad.v3.1.pca_loadings.ht/
+.docker/reference/pca_loadings/loadings_variants.tsv
+```
+
+If the cache is already populated (Hail's `_SUCCESS` marker present and TSV
+non-empty), the build copies it straight into the image — no GCS hit. If the
+cache is missing, the build mirrors the public gnomAD Hail Table from
+`gs://gcp-public-data--gnomad/release/3.1/pca/` once via `gsutil -m cp -r`
+(or `uvx --from gsutil gsutil` if uvx is available but gsutil isn't), then
+derives the TSV alongside via Hail and bakes both into the image. The
+`gsutil -m` mirror is resumable — rerunning the build skips files already on
+disk. Subsequent builds reuse the cache. Projection (`pca_project.py`) reads
+from the baked path, so the runtime container needs no network access.
+
+To rebuild the host cache from the remote:
+
+```bash
+FORCE_REFERENCE_CACHE=1 ./build_docker.sh
+```
+
+Run a pipeline inside the container with:
+
+```bash
+./scripts/run_in_docker.sh bash 03_individual_level/pca_qc_fast/scripts/run_pipeline.sh
+./scripts/run_gnomad_projection_docker.sh
+```
+
 1. **Generate mock genotypes** (or supply your own real GSA files in the same naming scheme):
    ```bash
    cd 01_mock_data_generation/scripts
