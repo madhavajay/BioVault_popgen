@@ -20,6 +20,10 @@ LOADINGS_HT_SOURCE="${LOADINGS_HT_SOURCE:-gs://gcp-public-data--gnomad/release/3
 CACHE_DIR="${ROOT_DIR}/.docker/reference/pca_loadings"
 CACHED_HT="${CACHE_DIR}/gnomad.v3.1.pca_loadings.ht"
 CACHED_TSV="${CACHE_DIR}/loadings_variants.tsv"
+AIMS_CACHE_DIR="${ROOT_DIR}/.docker/reference/aims"
+AIMS_AF_TSV="${AIMS_CACHE_DIR}/gnomad_af_per_locus.tsv"
+HGDP_TGP_VCF_DIR="${HGDP_TGP_VCF_DIR:-${ROOT_DIR}/.docker/reference/hgdp_tgp_vcf}"
+HGDP_TGP_PANEL="${ROOT_DIR}/03_individual_level/gnomad_projection/reference/panel_hgdp_tgp.tsv"
 
 docker build \
   --platform "${PLATFORM}" \
@@ -65,6 +69,32 @@ if [ "${FORCE_REFERENCE_CACHE:-0}" = "1" ] || [ ! -s "${CACHED_TSV}" ]; then
       "/work/.docker/reference/pca_loadings/loadings_variants.tsv"
 else
   echo "Using cached TSV at ${CACHED_TSV}"
+fi
+
+# 3. Derive the small AIMs gnomAD AF table from the HGDP+TGP VCFs. Same shape
+#    as the loadings cache: skip if already present, otherwise mirror the
+#    ~80 GB VCFs locally and derive the few-hundred-KB TSV in-container. Only
+#    this TSV is COPYed into the runtime image (the VCFs never are).
+if [ "${FORCE_REFERENCE_CACHE:-0}" = "1" ] || [ ! -s "${AIMS_AF_TSV}" ]; then
+  echo "Deriving ${AIMS_AF_TSV} from HGDP+TGP VCFs"
+  mkdir -p "${AIMS_CACHE_DIR}" "${HGDP_TGP_VCF_DIR}"
+  if [ ! -s "${HGDP_TGP_VCF_DIR}/gnomad.genomes.v3.1.2.hgdp_tgp.chr22.vcf.bgz" ]; then
+    echo "Mirroring HGDP+TGP VCFs -> ${HGDP_TGP_VCF_DIR} (~80 GB, resumable)"
+    bash "${ROOT_DIR}/02_reference_panels/scripts/download_gnomad_v3_hgdp_tgp.sh" \
+      "${HGDP_TGP_VCF_DIR}"
+  fi
+  docker run --rm \
+    --platform "${PLATFORM}" \
+    -v "${ROOT_DIR}:/work" \
+    -v "${HGDP_TGP_VCF_DIR}:/hgdp_tgp_vcf" \
+    -w /work \
+    "${TOOLS_IMAGE}" \
+    python /work/flows/bv_paper_fst_island_aims/build/derive_gnomad_aims_af.py \
+      "/work/03_individual_level/gnomad_projection/reference/panel_hgdp_tgp.tsv" \
+      "/hgdp_tgp_vcf" \
+      "/work/.docker/reference/aims/gnomad_af_per_locus.tsv"
+else
+  echo "Using cached AIMs AF table at ${AIMS_AF_TSV}"
 fi
 
 docker build \

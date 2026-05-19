@@ -6,6 +6,11 @@ __pycache__/
 # Local runtime caches
 .cache/
 .docker/
+.claude/
+.bvlr_cache/
+**/.bvlr_cache/
+.samples/
+**/.samples/
 
 # Nextflow runtime artefacts
 .nextflow/
@@ -30,3 +35,5 @@ work/
 04_population_level/fst_islands/data/merged/
 04_population_level/fst_islands/data/fst/
 04_population_level/fst_islands/data/pca/
+04_population_level/aims_differential_snps/data/
+04_population_level/raw_allele_freq_country/

@@ -40,16 +40,19 @@ RUN mkdir -p /opt/hadoop && \
 
 FROM tools AS runtime
 
-RUN mkdir -p /opt/biovault/reference/pca_loadings /opt/biovault/scripts && \
+RUN mkdir -p /opt/biovault/reference/pca_loadings /opt/biovault/reference/aims /opt/biovault/scripts && \
     chmod 666 /etc/passwd /etc/group
 
 COPY .docker/reference/pca_loadings/loadings_variants.tsv ${LOADINGS_VARIANTS_TSV}
 COPY .docker/reference/pca_loadings/gnomad.v3.1.pca_loadings.ht ${LOADINGS_HT}
+COPY .docker/reference/aims/gnomad_af_per_locus.tsv /opt/biovault/reference/aims/gnomad_af_per_locus.tsv
 COPY 03_individual_level/gnomad_projection/scripts /opt/biovault/scripts/gnomad_projection
 COPY 03_individual_level/gnomad_projection_fast/scripts /opt/biovault/scripts/gnomad_projection_fast
 COPY 03_individual_level/pca_qc_fast/scripts /opt/biovault/scripts/pca_qc_fast
+COPY flows/bv_paper_fst_island_aims/scripts /opt/biovault/scripts/bv_paper_fst_island_aims
 RUN chmod +x /opt/biovault/scripts/gnomad_projection/*.sh \
-             /opt/biovault/scripts/gnomad_projection_fast/*.sh
+             /opt/biovault/scripts/gnomad_projection_fast/*.sh \
+             /opt/biovault/scripts/bv_paper_fst_island_aims/*.sh
 
 WORKDIR /work
 
