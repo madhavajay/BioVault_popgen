@@ -6,9 +6,15 @@ list of ancestry-informative SNPs (AIMs) distinguishing sub-populations
 in the cohort. Each step runs as a self-contained Nextflow flow inside
 the `biovault-popgen:0.1.0` Docker image.
 
+The three flows are independent — each consumes the same
+`List[GenotypeRecord]` samplesheet and none chains its outputs into
+another. The order below is the recommended workflow (cheap sanity check
+first), not a data dependency. The only real data dependency is *inside*
+flow 3, where the per-country split → FST → AIMs sub-steps chain.
+
 ```
-        participants                   labels
-       (DDNA TXTs)                (island/region.tsv)
+        participants                participant facet
+       (DDNA TXTs)                  country (required → 3)
             │                            │
             ▼                            │
   ┌───────────────────────────┐          │   (1) sanity check
@@ -24,19 +30,15 @@ the `biovault-popgen:0.1.0` Docker image.
   │   project onto gnomAD     │          │   per-sample
   │   HGDP+1kGP 30-PC space   │          │   PC1..PC30
   └───────────────────────────┘          │
-            │                            │
-            └────────────┬───────────────┘
-                         ▼                    (3) population AF
+                                         │
+            ┌────────────────────────────┘
+            ▼                                 (3) FST + AIMs
   ┌─────────────────────────────────────┐    ──────────────
-  │ per-island allele frequency split   │    per-island TSVs
-  │ (TODO: bv_paper_island_af_fast)     │    of MAF/AF
+  │ bv_paper_fst_island_aims            │    one flow, two
+  │  split by country (biosynth)        │    containers:
+  │   → FST (WC84 matrix + plots)       │    per-country AF →
+  │   → AIMs (vs gnomAD ref + panels)   │    FST → AIMs SNPs
   └─────────────────────────────────────┘
-                         │
-                         ▼                    (4) AIMs ranking
-  ┌─────────────────────────────────────┐    ────────────
-  │ aims_differential_snps              │    SNPs ordered
-  │ (TODO: bv_paper_aims_fast)          │    by inter-island
-  └─────────────────────────────────────┘    divergence
 ```
 
 ## Step 0 — Data upload
@@ -117,38 +119,65 @@ per file × 1000 / 8 cores ≈ 60 s), then per-variant aggregation in
 numpy, then PLINK 2's downstream QC (`--rm-dup`, `--geno`, `--mind`,
 `--maf`, `--hwe`) which takes ~30 s for 396k SNPs × 1000 samples.
 
-## Step 3 — Per-island allele-frequency split (not yet flowed)
+## Step 3 — `bv_paper_fst_island_aims` (population FST + AIMs)
 
-**What it does.** Splits the cohort by `island_mapping.tsv` and emits one
-TSV per island with per-locus AF/MAF/missingness.
+**What it does.** A single flow that wraps the old "step 3 + step 4"
+(`04_population_level/{fst_islands,aims_differential_snps}`) into one
+pipeline, driven by a `country` participant facet instead of a static
+`island_mapping.tsv`.
 
-**Current state.** Two parallel implementations exist locally; neither
-is wrapped as a flow yet:
+**Input.** Same `List[GenotypeRecord]` samplesheet as flows 1–2, plus a
+required `country` facet (`flow.yaml` declares `required_facets:
+[country]`). The desktop refuses to generate the samplesheet if any
+selected participant has an empty `country`, so a hole can't reach the
+flow.
 
-- `04_population_level/scripts/make_island_af_tsvs.py` — pure
-  pandas/numpy generator. Reads DDNA TXTs + the mapping, writes per-island
-  AF TSVs directly. Untested on the regenerated 1000-sample cohort.
-- `04_run_allele_freq.sh` — biosynth-based driver using
-  `bvs emit-long` + `bvs aggregate-long`. Two-stage (per-participant
-  cache + per-island aggregation). Not yet run.
+**Internal stages** (two containers, orchestrated by Nextflow — the
+desktop runner pre-pulls every per-process `container` it finds):
 
-Outputs (file names match what `aims_differential_snps`'s
-`ISLAND_FILES` consumes):
-`04_population_level/raw_allele_freq_country/allele_freq_<label>.tsv`.
+1. **Split by country** — `container ghcr.io/openmined/biosynth:latest`.
+   Per-participant `bvs emit-long`, then per-country
+   `bvs aggregate-long` → `allele_freq_<country>.tsv`. The country label
+   is the facet value normalized: trim → lowercase → non-alphanumeric
+   runs → `_` → strip `_` (e.g. `"Trinidad and Tobago"` →
+   `allele_freq_trinidad_and_tobago.tsv`). The Groovy normalizer in
+   `main.nf` and `scripts/popset.py` are kept identical.
+2. **FST** — `container biovault-popgen:0.1.0`. Load/merge per-country
+   AF → pairwise Weir & Cockerham 1984 matrix → heatmap / dendrogram /
+   population PCA.
+3. **AIMs** — same container. Merge against the bundled gnomAD HGDP+TGP
+   reference, per-population differential SNPs vs gnomAD AFR/global, and
+   AFR/NFE + AFR/SAS AIMs panels with a combined PCA.
 
-**Next step.** Decide between the two implementations and wrap as
-`bv_paper_island_af_fast`.
+**Fail-loud, two layers.** Desktop `validate_required_facets` rejects a
+samplesheet missing `country`; inside the flow the split aborts if any
+country yields zero usable genotypes, and every popgen script
+re-asserts its expected `allele_freq_<pop>.tsv` exists and is non-empty
+(`popset.resolve_populations`).
 
-## Step 4 — `aims_differential_snps` (not yet flowed)
+**Outputs** (published to `params.results_dir`)
+- `country_map.tsv` — participant → normalized country.
+- `fst_matrix.tsv` — pairwise WC84 FST.
+- `merged_allele_freq_annotated.tsv` — per-locus AF, all populations.
+- `master_af_table.tsv` — populations + gnomAD global/AFR/NFE/SAS.
+- `all_outliers_long.tsv` — long-format per-population differential SNPs.
+- `aims_combined.tsv` — deduplicated AFR/NFE + AFR/SAS AIMs panel.
+- `population_level_summary.txt` — FST matrix + master-AF summary.
+- `*.png` / `*.pdf` — FST and AIMs plots.
 
-**What it does.** Consumes the per-island AF TSVs and ranks SNPs by
-divergence (e.g. Fst-style) — the top of that list is the cohort's set
-of ancestry-informative markers.
+Source forks live at `flows/bv_paper_fst_island_aims/scripts/`
+(`popset.py`, `fst_01..03`, `aims_04..06`, `split_allele_freq.sh`,
+`run_pipeline.sh`); the original `04_population_level` scripts are left
+unchanged so the by-hand source pipeline still works. The script tree is
+baked into the image at
+`/opt/biovault/scripts/bv_paper_fst_island_aims/`.
 
-**Current state.** Local Python implementation in
-`04_population_level/aims_differential_snps/`. Not yet flowed.
-
-**Next step.** Wrap as `bv_paper_aims_fast`.
+The AIMs gnomAD reference is **pre-baked at image-build time** (mirroring
+the PCA-loadings pattern): `build_docker.sh` mirrors the ~80 GB HGDP+TGP
+VCFs once and `build/derive_gnomad_aims_af.py` derives the small
+`gnomad_af_per_locus.tsv`, which is the only file COPYed into the runtime
+image (at `/opt/biovault/reference/aims/`). Runtime never touches the
+VCFs.
 
 ## Image build
 
@@ -158,14 +187,19 @@ The Docker image bakes:
   numpy, sklearn).
 - gnomAD v3.1 PCA loadings HT and `loadings_variants.tsv` under
   `/opt/biovault/reference/pca_loadings/`.
-- All three pipeline script trees under `/opt/biovault/scripts/`:
+- The pre-baked AIMs gnomAD reference TSV under
+  `/opt/biovault/reference/aims/gnomad_af_per_locus.tsv`.
+- All pipeline script trees under `/opt/biovault/scripts/`:
   - `gnomad_projection/` — slow (Hail) reference implementation.
   - `gnomad_projection_fast/` — numpy-only fast implementation.
   - `pca_qc_fast/` — within-cohort QC.
+  - `bv_paper_fst_island_aims/` — population FST + AIMs forks.
 
 Build: `bash build_docker.sh`. The HT cache lives on the host at
 `.docker/reference/pca_loadings/` and is populated by `gsutil` on first
-build (idempotent — subsequent builds reuse).
+build; the AIMs AF cache lives at `.docker/reference/aims/` and is
+derived from a one-time ~80 GB HGDP+TGP VCF mirror. Both caches are
+idempotent — subsequent builds reuse them.
 
 ## Flow inventory
 
@@ -174,8 +208,7 @@ build (idempotent — subsequent builds reuse).
 | `bv_paper_pca_qc_fast`                     | 1    | new      |
 | `bv_paper_gnomad_projection_fast`          | 2    | new      |
 | `biovault-popgen-gnomad-projection-1`      | 2    | existing (slow reference, kept) |
-| `bv_paper_island_af_fast`                  | 3    | TODO     |
-| `bv_paper_aims_fast`                       | 4    | TODO     |
+| `bv_paper_fst_island_aims`                 | 3    | new (needs image rebuild; not yet run e2e) |
 | `allele-freq-old`                          | 3 (legacy) | reference |
 
 Each flow lives at `flows/<name>/` with `flow.yaml`, `module.yaml`, and
