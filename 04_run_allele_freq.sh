@@ -17,8 +17,8 @@
 #   IMAGE          biosynth docker image
 #   PARALLEL       emit-long fan-out (default 8)
 #
-# Output filenames match what 04_population_level/fst_islands/scripts/
-# 01_load_merge.py expects: BVI / TT keep case; the rest lowercase.
+# Output filenames are normalized the same way as the BioVault flow's
+# `normalizeCountry()`: lowercase labels in allele_freq_<label>.tsv.
 
 set -euo pipefail
 
@@ -27,8 +27,20 @@ MAPPING="${MAPPING:-${ROOT_DIR}/01_mock_data_generation/output/island_mapping.ts
 DATA_DIR="${DATA_DIR:-${ROOT_DIR}/01_mock_data_generation/output}"
 OUT_DIR="${OUT_DIR:-${ROOT_DIR}/04_population_level/raw_allele_freq_country}"
 BVLR_DIR="${BVLR_DIR:-${ROOT_DIR}/04_population_level/.bvlr_cache}"
-IMAGE="${IMAGE:-ghcr.io/openmined/biosynth:latest}"
+# Pinned biosynth version. Do NOT use :latest — older tags (<=0.1.19)
+# silently emit empty .bvlr for Illumina GSGT input. 0.1.22+ handles both.
+IMAGE="${IMAGE:-ghcr.io/openmined/biosynth:0.1.23}"
 PARALLEL="${PARALLEL:-8}"
+
+# bvs runner. The pinned docker biosynth image lags host bvs and older
+# versions (<=0.1.19) silently emit empty .bvlr for Illumina GSGT input.
+# Prefer host bvs when present (handles DDNA + Illumina); else docker.
+# Override with BVS_MODE=host|docker.
+BVS_MODE="${BVS_MODE:-auto}"
+if [ "${BVS_MODE}" = "auto" ]; then
+    if command -v bvs >/dev/null 2>&1; then BVS_MODE=host; else BVS_MODE=docker; fi
+fi
+echo "bvs mode: ${BVS_MODE}$([ "${BVS_MODE}" = host ] && echo " ($(bvs --version 2>/dev/null))")"
 
 LIMIT=""
 while [ $# -gt 0 ]; do
@@ -46,8 +58,8 @@ mkdir -p "${OUT_DIR}" "${BVLR_DIR}"
 ISLANDS=(BVI TT Bahamas Barbados Bermuda StLucia)
 island_label() {
     case "$1" in
-        BVI)      echo BVI ;;
-        TT)       echo TT ;;
+        BVI)      echo bvi ;;
+        TT)       echo tt ;;
         Bahamas)  echo bahamas ;;
         Barbados) echo barbados ;;
         Bermuda)  echo bermuda ;;
@@ -81,19 +93,40 @@ N_TODO=$(wc -l < "${TODO}" | tr -d ' ')
 echo "Stage 1: emit-long pending: ${N_TODO} (cached: $(( $(wc -l < "${TODO}.mapping") - N_TODO )))"
 
 if [ "${N_TODO}" -gt 0 ]; then
-    < "${TODO}" xargs -L 1 -P "${PARALLEL}" \
-      sh -c '
-        pid=$1; txt=$2
-        docker run --rm --platform linux/amd64 \
-            --entrypoint "" \
-            -v "'"${ROOT_DIR}"':'"${ROOT_DIR}"'" \
-            -w "'"${ROOT_DIR}"'" \
-            "'"${IMAGE}"'" \
-            bvs emit-long \
-                --input "$txt" \
-                --output "'"${BVLR_DIR}"'/$pid.bvlr" \
-                --participant "$pid" >/dev/null
-        ' _
+    # Emit to <pid>.bvlr.tmp then atomically mv to <pid>.bvlr only on
+    # success. An interrupted/failed emit leaves only a .tmp (ignored by
+    # the `-s <pid>.bvlr` cache check), so a Ctrl-C can never poison the
+    # cache with a truncated file that looks "cached".
+    if [ "${BVS_MODE}" = host ]; then
+        EMIT='
+            pid=$1; txt=$2
+            tmp="'"${BVLR_DIR}"'/$pid.bvlr.tmp"; fin="'"${BVLR_DIR}"'/$pid.bvlr"
+            rm -f "$tmp"
+            bvs emit-long --input "$txt" \
+                --output "$tmp" \
+                --participant "$pid" >/dev/null || { echo "FAIL emit-long $pid" >&2; rm -f "$tmp"; exit 1; }
+            [ -s "$tmp" ] || { echo "EMPTY .bvlr $pid (emit-long produced nothing)" >&2; rm -f "$tmp"; exit 1; }
+            mv "$tmp" "$fin"
+        '
+    else
+        EMIT='
+            pid=$1; txt=$2
+            tmp="'"${BVLR_DIR}"'/$pid.bvlr.tmp"; fin="'"${BVLR_DIR}"'/$pid.bvlr"
+            rm -f "$tmp"
+            docker run --rm --platform linux/amd64 --entrypoint "" \
+                -v "'"${ROOT_DIR}"':'"${ROOT_DIR}"'" -w "'"${ROOT_DIR}"'" \
+                "'"${IMAGE}"'" \
+                bvs emit-long --input "$txt" \
+                    --output "$tmp" \
+                    --participant "$pid" >/dev/null || { echo "FAIL emit-long $pid" >&2; rm -f "$tmp"; exit 1; }
+            [ -s "$tmp" ] || { echo "EMPTY .bvlr $pid" >&2; rm -f "$tmp"; exit 1; }
+            mv "$tmp" "$fin"
+        '
+    fi
+    if ! < "${TODO}" xargs -L 1 -P "${PARALLEL}" sh -c "${EMIT}" _; then
+        echo "ERROR: one or more emit-long calls failed (see above). Aborting." >&2
+        exit 1
+    fi
 fi
 
 # ── Stage 2: aggregate per island ─────────────────────────────────────────────
@@ -116,14 +149,19 @@ for ISLAND in "${ISLANDS[@]}"; do
 
     OUT="${OUT_DIR}/allele_freq_${LABEL}.tsv"
     echo "  ${ISLAND} (${COUNT} participants) -> ${OUT}"
-    docker run --rm --platform linux/amd64 \
-        --entrypoint "" \
-        -v "${ROOT_DIR}:${ROOT_DIR}" \
-        -w "${ROOT_DIR}" \
-        "${IMAGE}" \
-        bvs aggregate-long \
-            --input-list "${LIST}" \
-            --allele-freq-tsv "${OUT}" >/dev/null
+    if [ "${BVS_MODE}" = host ]; then
+        bvs aggregate-long --input-list "${LIST}" \
+            --allele-freq-tsv "${OUT}" >/dev/null \
+            || { echo "ERROR: aggregate-long failed for ${ISLAND}" >&2; exit 1; }
+    else
+        docker run --rm --platform linux/amd64 --entrypoint "" \
+            -v "${ROOT_DIR}:${ROOT_DIR}" -w "${ROOT_DIR}" \
+            "${IMAGE}" \
+            bvs aggregate-long --input-list "${LIST}" \
+                --allele-freq-tsv "${OUT}" >/dev/null \
+            || { echo "ERROR: aggregate-long failed for ${ISLAND}" >&2; exit 1; }
+    fi
+    [ -s "${OUT}" ] || { echo "ERROR: empty AF output ${OUT}" >&2; exit 1; }
 done
 
 rm -f "${TODO}.mapping"

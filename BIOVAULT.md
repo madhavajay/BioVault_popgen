@@ -4,7 +4,7 @@ A researcher with a cohort of DDNA GSAv3 genotype files (one per
 participant) walks the following steps to go from raw uploads to a ranked
 list of ancestry-informative SNPs (AIMs) distinguishing sub-populations
 in the cohort. Each step runs as a self-contained Nextflow flow inside
-the `biovault-popgen:0.1.0` Docker image.
+the `biovault-popgen:0.1.1` Docker image.
 
 The three flows are independent — each consumes the same
 `List[GenotypeRecord]` samplesheet and none chains its outputs into
@@ -142,7 +142,7 @@ desktop runner pre-pulls every per-process `container` it finds):
    runs → `_` → strip `_` (e.g. `"Trinidad and Tobago"` →
    `allele_freq_trinidad_and_tobago.tsv`). The Groovy normalizer in
    `main.nf` and `scripts/popset.py` are kept identical.
-2. **FST** — `container biovault-popgen:0.1.0`. Load/merge per-country
+2. **FST** — `container biovault-popgen:0.1.1`. Load/merge per-country
    AF → pairwise Weir & Cockerham 1984 matrix → heatmap / dendrogram /
    population PCA.
 3. **AIMs** — same container. Merge against the bundled gnomAD HGDP+TGP

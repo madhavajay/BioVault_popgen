@@ -1,7 +1,7 @@
 apiVersion: syftbox.openmined.org/v1alpha1
 kind: Flow
 metadata:
-  name: bv_paper_pca_qc_fast
+  name: 01_bv_paper_pca_qc_fast
   version: 0.1.0
 spec:
   inputs:
@@ -18,4 +18,4 @@ spec:
         snp_info: File(snp_info.tsv)
         pca_pc12_plot: File(pca_pc1_pc2.png)
         pca_pc34_plot: File(pca_pc3_pc4.png)
-        log: File(fast_pipeline.log)
+        pipeline_log: File(fast_pipeline.log)

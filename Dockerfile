@@ -8,6 +8,7 @@ ENV MPLCONFIGDIR=/tmp/matplotlib
 ENV XDG_CACHE_HOME=/tmp/.cache
 ENV LOADINGS_HT=/opt/biovault/reference/pca_loadings/gnomad.v3.1.pca_loadings.ht
 ENV LOADINGS_VARIANTS_TSV=/opt/biovault/reference/pca_loadings/loadings_variants.tsv
+ENV LOADINGS_NPZ=/opt/biovault/reference/pca_loadings/loadings.npz
 ENV GCS_CONNECTOR_JAR=/opt/hadoop/gcs-connector-hadoop3.jar
 
 RUN apt-get update && \
@@ -44,15 +45,21 @@ RUN mkdir -p /opt/biovault/reference/pca_loadings /opt/biovault/reference/aims /
     chmod 666 /etc/passwd /etc/group
 
 COPY .docker/reference/pca_loadings/loadings_variants.tsv ${LOADINGS_VARIANTS_TSV}
+COPY .docker/reference/pca_loadings/loadings.npz ${LOADINGS_NPZ}
 COPY .docker/reference/pca_loadings/gnomad.v3.1.pca_loadings.ht ${LOADINGS_HT}
 COPY .docker/reference/aims/gnomad_af_per_locus.tsv /opt/biovault/reference/aims/gnomad_af_per_locus.tsv
 COPY 03_individual_level/gnomad_projection/scripts /opt/biovault/scripts/gnomad_projection
 COPY 03_individual_level/gnomad_projection_fast/scripts /opt/biovault/scripts/gnomad_projection_fast
 COPY 03_individual_level/pca_qc_fast/scripts /opt/biovault/scripts/pca_qc_fast
-COPY flows/bv_paper_fst_island_aims/scripts /opt/biovault/scripts/bv_paper_fst_island_aims
+COPY 03_individual_level/sex_biased_admixture/scripts /opt/biovault/scripts/sex_biased_admixture
+COPY 03_individual_level/sex_biased_admixture_fast/scripts /opt/biovault/scripts/sex_biased_admixture_fast
+COPY 04_population_level/fst_aims_fast/scripts /opt/biovault/scripts/population_level
+# NOTE: flow definitions are intentionally NOT baked. Only analysis script
+# trees live in the image. The population flow's split step runs in the
+# biosynth container (just `bvs` calls, inlined in main.nf — no baked script
+# needed there); its FST/AIMs step consumes the baked population_level/.
 RUN chmod +x /opt/biovault/scripts/gnomad_projection/*.sh \
-             /opt/biovault/scripts/gnomad_projection_fast/*.sh \
-             /opt/biovault/scripts/bv_paper_fst_island_aims/*.sh
+             /opt/biovault/scripts/gnomad_projection_fast/*.sh
 
 WORKDIR /work
 

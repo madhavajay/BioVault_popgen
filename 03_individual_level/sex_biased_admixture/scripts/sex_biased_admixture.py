@@ -1,30 +1,37 @@
 """
-sex_biased_admixture.py  —  v2 (mock-data-driven)
-==================================================
-Sex-biased admixture analysis built entirely on the 10 mock GSA files
-produced by 01_mock_data_generation.  
+sex_biased_admixture.py  —  v3 (facet-driven)
+==============================================
+Sex-biased admixture analysis over a cohort of GSA genotype files
+(DDNA or Illumina GSGT — read via the shared genoio adapter).
 
-What is computed from real data
---------------------------------
+What is computed
+----------------
 • Per-sample, per-chromosome SNP counts, heterozygosity rate, BAF
-  mean/variance, and LRR mean  (read directly from the .txt files)
+  mean/variance, and LRR mean  (read directly from the genotype files)
 • Ancestry-like components via NMF(k=3) on subsampled BAF values,
   autosomes and X chromosome treated separately
+• Per-sex contrast of the above; the key panel (d) compares
+  autosomal vs X heterozygosity by sex.
 
 Sex assignment
 --------------
-Sorted sample IDs → first 5 = Female, last 5 = Male
-(mock data carries no sex-chromosome dosage signal, so inference
-from LRR/BAF is impossible; deterministic assignment is used instead)
+Sex is the **`sex` participant facet**, passed through exactly like the
+`country`/`island` facet: `assign_sex()` reads a `sex_mapping.tsv`
+(`participant_id<TAB>sex`, values M/F/Male/Female/1/2) located via
+$BIOVAULT_SEX_MAPPING or next to the genotype data. If no mapping is
+found it falls back to a deterministic positional split (legacy mock
+behaviour) and logs a loud warning — that fallback is NOT real sex.
 
-⚠ Mock-data caveat
--------------------
-Generated with --alt-frequency 0.5, every SNP sits at ~50% alt
-frequency and all samples are genetically indistinguishable.  NMF
-components will be near-equal (~0.33 each) across all individuals and
-the X − auto difference will be ~0.  This is the *correct* result for
-this synthetic dataset; swap in Carika's real GSA files to obtain
-biologically meaningful output.
+Synthetic positive control
+--------------------------
+Plain `--alt-frequency 0.5` data carries no sex signal, so panel d is
+flat by construction. To get a verifiable known-truth signal the
+synthetic generator injects an X-chromosome block that mimics male
+X-hemizygosity: Male → homozygous (low X heterozygosity), Female →
+heterozygous (normal diploid X het). That reproduces the canonical
+sex-biased signature panel d is designed to detect (male X-het ≪
+female X-het, autosomal het ≈ equal). With no injection / real data the
+flat result is still the correct output.
 
 Outputs
 -------
@@ -48,6 +55,9 @@ import matplotlib.patches as mpatches
 from matplotlib.lines import Line2D
 import matplotlib.ticker as ticker
 from sklearn.decomposition import NMF
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import genoio as _genoio  # noqa: E402  (synced fork, see genoio.py header)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 SCRIPT_DIR  = Path(__file__).resolve().parent
@@ -105,15 +115,24 @@ SUBSAMPLE_STEP  = 14   # autosomes: ~686 K SNPs → ~49 K after subsampling
 
 # ── Step 1: Load raw genotype files ───────────────────────────────────────────
 def read_txt(path: Path) -> pd.DataFrame:
-    """Read one GSA .txt file; return DataFrame with chrom/baf/lrr/is_het."""
-    df = pd.read_csv(
-        path,
-        sep="\t",
-        comment="#",
-        header=None,
-        names=["rsid", "chrom", "pos", "genotype", "gs", "baf", "lrr"],
-        dtype={"chrom": str, "genotype": str},
-    )
+    """Read one GSA .txt file; return DataFrame with chrom/baf/lrr/is_het.
+
+    Illumina GSGT synthetic carries no BAF/LRR, so those come back NaN and
+    the BAF-derived NMF/stat columns are uninformative for Illumina samples
+    (genotype-based het_rate is still valid)."""
+    if _genoio.sniff_format(path) == "illumina":
+        g = _genoio.read_genotypes(path)
+        df = g.rename(columns={"gt": "genotype"})[
+            ["rsid", "chrom", "pos", "genotype", "gs", "baf", "lrr"]]
+    else:
+        df = pd.read_csv(
+            path,
+            sep="\t",
+            comment="#",
+            header=None,
+            names=["rsid", "chrom", "pos", "genotype", "gs", "baf", "lrr"],
+            dtype={"chrom": str, "genotype": str},
+        )
     df["baf"] = pd.to_numeric(df["baf"], errors="coerce")
     df["lrr"] = pd.to_numeric(df["lrr"], errors="coerce")
     # Heterozygous = two different, non-missing alleles
@@ -138,10 +157,69 @@ def load_all_samples(data_dir: Path) -> dict:
 
 
 # ── Step 2: Sex assignment ─────────────────────────────────────────────────────
+_SEX_NORM = {
+    "m": "M", "male": "M", "1": "M",
+    "f": "F", "female": "F", "2": "F",
+}
+
+
+def _load_sex_mapping() -> dict:
+    """Read participant_id → {M,F} from a sex facet mapping file, mirroring
+    how the island/country facet is consumed elsewhere.
+
+    Lookup order: $BIOVAULT_SEX_MAPPING, then sex_mapping.tsv next to the
+    genotype data (DATA_DIR) or one level up. Returns {} if none found.
+    """
+    import os
+
+    candidates = []
+    env = os.environ.get("BIOVAULT_SEX_MAPPING")
+    if env:
+        candidates.append(Path(env))
+    candidates += [
+        DATA_DIR / "sex_mapping.tsv",
+        DATA_DIR.parent / "sex_mapping.tsv",
+    ]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        mapping = {}
+        with path.open() as f:
+            for i, line in enumerate(f):
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) < 2:
+                    continue
+                pid, raw = parts[0].strip(), parts[1].strip()
+                if i == 0 and raw.lower() in ("sex", "gender"):
+                    continue  # header row
+                sx = _SEX_NORM.get(raw.lower())
+                if sx:
+                    mapping[pid] = sx
+        if mapping:
+            log.info(f"Sex facet: loaded {len(mapping)} labels from {path}")
+            return mapping
+    return {}
+
+
 def assign_sex(sample_ids: list) -> dict:
-    """First half (sorted) → Female, second half → Male."""
+    """Sex per participant from the sex facet mapping file. Falls back to a
+    deterministic positional split (first half → F) only if no mapping is
+    available, so legacy mock runs still work — emits a clear warning."""
+    mapping = _load_sex_mapping()
+    if mapping:
+        missing = [s for s in sample_ids if s not in mapping]
+        if missing:
+            log.warning(
+                f"Sex facet: {len(missing)} sample(s) absent from mapping; "
+                f"defaulting them to 'M' (e.g. {missing[:3]})")
+        return {sid: mapping.get(sid, "M") for sid in sample_ids}
+
+    log.warning(
+        "Sex facet: no sex_mapping.tsv found — falling back to positional "
+        "split (first half sorted = Female). This is NOT real sex; provide "
+        "a sex_mapping.tsv (participant_id<TAB>sex) for valid results.")
     sids = sorted(sample_ids)
-    n    = len(sids)
+    n = len(sids)
     return {sid: ("F" if i < n // 2 else "M") for i, sid in enumerate(sids)}
 
 

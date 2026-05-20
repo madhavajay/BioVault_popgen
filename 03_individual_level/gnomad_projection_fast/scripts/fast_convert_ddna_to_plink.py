@@ -42,6 +42,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import genoio as _genoio  # noqa: E402  (synced fork, see genoio.py header)
+
 
 AUTOSOMES_S2 = np.array([str(c).encode() for c in range(1, 23)], dtype="S2")
 BASES_S1 = np.frombuffer(b"ACGT", dtype="S1")
@@ -54,18 +57,28 @@ def read_ddna_fast(path: str, min_gs: float):
     Filtered to: autosomes 1..22, gs >= min_gs, len(gt)==2 with both bases in
     ACGT. Bytes dtype (S1/S2) is used throughout for cheap allele ops.
     """
-    df = pd.read_csv(
-        path, sep="\t", comment="#", header=None,
-        names=["rsid", "chrom", "pos", "gt", "gs", "baf", "lrr"],
-        usecols=["rsid", "chrom", "pos", "gt", "gs"],
-        dtype={"rsid": str, "chrom": str, "pos": np.int64, "gt": str, "gs": np.float32},
-        engine="c", na_filter=False,
-    )
-    rsid = df["rsid"].to_numpy(dtype=object)
-    chrom = df["chrom"].to_numpy(dtype=object).astype("S2")
-    pos = df["pos"].to_numpy(dtype=np.int64)
-    gt = df["gt"].to_numpy(dtype=object).astype("S2")
-    gs = df["gs"].to_numpy(dtype=np.float32)
+    if _genoio.sniff_format(path) == "illumina":
+        # GSGT synthetic carries no GenCall score; treat every call as
+        # confident (gs = 1.0) so the gs >= min_gs filter is a no-op.
+        gdf = _genoio.read_genotypes(path)
+        rsid = gdf["rsid"].to_numpy(dtype=object)
+        chrom = gdf["chrom"].to_numpy(dtype=object).astype("S2")
+        pos = gdf["pos"].astype("int64").to_numpy()
+        gt = gdf["gt"].to_numpy(dtype=object).astype("S2")
+        gs = np.ones(len(rsid), dtype=np.float32)
+    else:
+        df = pd.read_csv(
+            path, sep="\t", comment="#", header=None,
+            names=["rsid", "chrom", "pos", "gt", "gs", "baf", "lrr"],
+            usecols=["rsid", "chrom", "pos", "gt", "gs"],
+            dtype={"rsid": str, "chrom": str, "pos": np.int64, "gt": str, "gs": np.float32},
+            engine="c", na_filter=False,
+        )
+        rsid = df["rsid"].to_numpy(dtype=object)
+        chrom = df["chrom"].to_numpy(dtype=object).astype("S2")
+        pos = df["pos"].to_numpy(dtype=np.int64)
+        gt = df["gt"].to_numpy(dtype=object).astype("S2")
+        gs = df["gs"].to_numpy(dtype=np.float32)
 
     # Drop rows where rsid == "rsid" (any embedded header row).
     mask = rsid != "rsid"

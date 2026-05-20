@@ -1,0 +1,22 @@
+apiVersion: syftbox.openmined.org/v1alpha1
+kind: Flow
+metadata:
+  name: 03_bv_paper_sex_biased_admixture_fast
+  version: 0.1.0
+spec:
+  inputs:
+    samplesheet:
+      type: List[GenotypeRecord]
+      description: Genotype samplesheet with a participant `sex` facet column.
+      required_facets:
+        - sex
+  steps:
+    - id: sex_biased_admixture_fast
+      uses: ./
+      with:
+        participants: inputs.samplesheet
+      publish:
+        sex_bias_results: File(sex_bias_results.tsv)
+        sex_bias_plot: File(figure4_sex_biased_admixture.png)
+        sex_bias_plot_pdf: File(figure4_sex_biased_admixture.pdf)
+        pipeline_log: File(sex_biased_admixture.log)

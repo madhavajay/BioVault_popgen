@@ -2,7 +2,7 @@
 # Build the BioVault_popgen Docker image.
 #
 # Overrides:
-#   VERSION=0.1.0 ./build_docker.sh                   # tag biovault-popgen:0.1.0 + :latest
+#   VERSION=0.1.1 ./build_docker.sh                   # tag biovault-popgen:0.1.1 + :latest
 #   IMAGE_NAME=ghcr.io/foo/biovault-popgen ./build_docker.sh
 #   PLATFORM=linux/arm64 ./build_docker.sh
 #   FORCE_REFERENCE_CACHE=1 ./build_docker.sh         # re-mirror loadings cache from GCS
@@ -10,7 +10,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERSION="${VERSION:-0.1.0}"
+VERSION="${VERSION:-0.1.1}"
 IMAGE_NAME="${IMAGE_NAME:-biovault-popgen}"
 IMAGE_VERSIONED="${IMAGE_NAME}:${VERSION}"
 IMAGE_LATEST="${IMAGE_NAME}:latest"
@@ -71,6 +71,24 @@ else
   echo "Using cached TSV at ${CACHED_TSV}"
 fi
 
+# 2b. Derive the float64 loadings.npz from the local HT via Hail in-container
+#     (same pattern as the TSV). Baked so gnomad_projection_fast skips the
+#     ~45 s Hail extraction on every flow run. Skip if cached.
+CACHED_NPZ="${CACHE_DIR}/loadings.npz"
+if [ "${FORCE_REFERENCE_CACHE:-0}" = "1" ] || [ ! -s "${CACHED_NPZ}" ]; then
+  echo "Deriving ${CACHED_NPZ} from local HT"
+  docker run --rm \
+    --platform "${PLATFORM}" \
+    -v "${ROOT_DIR}:/work" \
+    -w /work \
+    "${TOOLS_IMAGE}" \
+    python /work/03_individual_level/gnomad_projection_fast/scripts/extract_loadings_matrix.py \
+      --ht  "/work/.docker/reference/pca_loadings/gnomad.v3.1.pca_loadings.ht" \
+      --out "/work/.docker/reference/pca_loadings/loadings.npz"
+else
+  echo "Using cached loadings.npz at ${CACHED_NPZ}"
+fi
+
 # 3. Derive the small AIMs gnomAD AF table from the HGDP+TGP VCFs. Same shape
 #    as the loadings cache: skip if already present, otherwise mirror the
 #    ~80 GB VCFs locally and derive the few-hundred-KB TSV in-container. Only
@@ -89,7 +107,7 @@ if [ "${FORCE_REFERENCE_CACHE:-0}" = "1" ] || [ ! -s "${AIMS_AF_TSV}" ]; then
     -v "${HGDP_TGP_VCF_DIR}:/hgdp_tgp_vcf" \
     -w /work \
     "${TOOLS_IMAGE}" \
-    python /work/flows/bv_paper_fst_island_aims/build/derive_gnomad_aims_af.py \
+    python /work/04_population_level/fst_aims_fast/build/derive_gnomad_aims_af.py \
       "/work/03_individual_level/gnomad_projection/reference/panel_hgdp_tgp.tsv" \
       "/hgdp_tgp_vcf" \
       "/work/.docker/reference/aims/gnomad_af_per_locus.tsv"

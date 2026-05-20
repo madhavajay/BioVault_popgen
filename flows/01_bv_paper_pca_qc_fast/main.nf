@@ -14,11 +14,27 @@ workflow USER {
 
     main:
         def participantTuples = participants.map { record ->
-            tuple(record.participant_id.toString(), file(record.genotype_file))
+            tuple(
+                record.participant_id.toString(),
+                file(record.genotype_file),
+                (record.country?.toString()?.trim() ?: '(unset)'),
+                (record.sex?.toString()?.trim() ?: '(unset)')
+            )
         }
         def collected = participantTuples
             .collect(flat: false)
             .map { items ->
+                // Aggregate-only facet proof (counts, never participant IDs).
+                // Best-effort: no required_facets, so pca_qc still runs on a
+                // bare samplesheet — facets show '(unset)' until the loader
+                // carries them, then real per-value counts appear here.
+                def countryCounts = items.collect { it[2] }.countBy { it }.sort()
+                def sexCounts     = items.collect { it[3] }.countBy { it }.sort()
+                println "[bv] participants: ${items.size()}"
+                println "[bv] facet country: " +
+                    countryCounts.collect { k, v -> "${k}=${v}" }.join(', ')
+                println "[bv] facet sex: " +
+                    sexCounts.collect { k, v -> "${k}=${v}" }.join(', ')
                 tuple(
                     items.collect { it[0] },
                     items.collect { it[1] }
@@ -32,11 +48,11 @@ workflow USER {
         snp_info = qc.snp_info
         pca_pc12_plot = qc.pca_pc12_plot
         pca_pc34_plot = qc.pca_pc34_plot
-        log = qc.log
+        pipeline_log = qc.pipeline_log
 }
 
 process pca_qc_fast {
-    container 'biovault-popgen:0.1.0'
+    container 'biovault-popgen:0.1.1'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'copy'
     errorStrategy { params.nextflow.error_strategy }
@@ -51,7 +67,7 @@ process pca_qc_fast {
         path "snp_info.tsv",     emit: snp_info
         path "pca_pc1_pc2.png",  emit: pca_pc12_plot, optional: true
         path "pca_pc3_pc4.png",  emit: pca_pc34_plot, optional: true
-        path "fast_pipeline.log", emit: log, optional: true
+        path "fast_pipeline.log", emit: pipeline_log, optional: true
 
     script:
     def staging = []
@@ -76,10 +92,13 @@ process pca_qc_fast {
     mkdir -p input
     ${staging.join('\n    ')}
 
-    # pca_qc_fast's BASE_DIR = parent of the script. Copy the script tree
-    # into a writable location so `data/`, `plots/`, `logs/` land here.
-    cp -r /opt/biovault/scripts/pca_qc_fast pca_qc_fast
-    mkdir -p pca_qc_fast/data pca_qc_fast/plots pca_qc_fast/logs
+    # The image bakes the script *contents* flat into
+    # /opt/biovault/scripts/pca_qc_fast/ (fast_pipeline.py, genoio.py, ...).
+    # fast_pipeline.py uses BASE_DIR = Path(__file__).parents[1], so it must
+    # live at <base>/scripts/fast_pipeline.py for outputs to land in
+    # <base>/{data,plots,logs}. Reconstruct that layout in the writable workdir.
+    mkdir -p pca_qc_fast/scripts pca_qc_fast/data pca_qc_fast/plots pca_qc_fast/logs
+    cp /opt/biovault/scripts/pca_qc_fast/*.py pca_qc_fast/scripts/
 
     source /opt/conda/etc/profile.d/conda.sh
     conda activate biovault_popgen

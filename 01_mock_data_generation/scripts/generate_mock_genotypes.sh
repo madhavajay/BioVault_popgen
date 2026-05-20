@@ -35,7 +35,7 @@ echo "Generating ${COUNT} synthetic genotypes (seed=${SEED}, threads=${THREADS})
 docker run --platform linux/amd64 --rm \
   -v "${BASE_DIR}:/work" \
   -w /work \
-  ghcr.io/openmined/biosynth:latest \
+  ghcr.io/openmined/biosynth:0.1.22 \
   synthetic \
     --output "output/{id}/{id}_X_X_GSAv3-DTC_GRCh38-{month}-{day}-{year}.txt" \
     --count "${COUNT}" \
@@ -47,7 +47,7 @@ echo "Converting genotypes to VCF ..."
 docker run --platform linux/amd64 --rm \
   -v "${BASE_DIR}:/work" \
   -w /work \
-  ghcr.io/openmined/biosynth:latest \
+  ghcr.io/openmined/biosynth:0.1.22 \
   genotype-to-vcf \
     --input output \
     --outdir output/vcf \

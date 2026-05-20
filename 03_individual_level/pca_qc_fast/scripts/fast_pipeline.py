@@ -32,6 +32,10 @@ from scipy import stats
 from sklearn.decomposition import PCA
 from sklearn.impute import SimpleImputer
 
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import genoio as _genoio  # noqa: E402  (synced fork, see genoio.py header)
+
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = Path(os.environ.get("BIOVAULT_DATA_DIR", BASE_DIR.parent)).resolve()
@@ -40,6 +44,7 @@ PLINK_DIR = BASE_DIR / "data" / "plink"
 PCA_DIR = BASE_DIR / "data" / "pca"
 PLOTS_DIR = BASE_DIR / "plots"
 LOG_DIR = BASE_DIR / "logs"
+QC_DIR = BASE_DIR / "data" / "qc"
 
 COLS = ["rsid", "chromosome", "position", "genotype", "gs", "baf", "lrr"]
 VALID_BASES = np.array([b"A", b"C", b"G", b"T"], dtype="S1")
@@ -100,15 +105,21 @@ def discover_samples() -> list[tuple[str, Path]]:
 
 def read_sample(task: tuple[str, Path]) -> tuple[str, pd.DataFrame]:
     sample_id, path = task
-    df = pd.read_csv(
-        path,
-        sep="\t",
-        comment="#",
-        header=None,
-        names=COLS,
-        usecols=["rsid", "chromosome", "position", "genotype"],
-        dtype={"rsid": str, "chromosome": str, "position": np.int64, "genotype": str},
-    )
+    if _genoio.sniff_format(path) == "illumina":
+        g = _genoio.read_genotypes(path)
+        df = g[["rsid", "chrom", "pos", "gt"]].rename(columns={
+            "chrom": "chromosome", "pos": "position", "gt": "genotype"})
+        df["position"] = df["position"].astype(np.int64)
+    else:
+        df = pd.read_csv(
+            path,
+            sep="\t",
+            comment="#",
+            header=None,
+            names=COLS,
+            usecols=["rsid", "chromosome", "position", "genotype"],
+            dtype={"rsid": str, "chromosome": str, "position": np.int64, "genotype": str},
+        )
     df = df.dropna(subset=["rsid", "genotype"])
     df["genotype"] = df["genotype"].str.upper().str.strip()
     return sample_id, df
@@ -256,18 +267,71 @@ def write_plink_files(
         out.to_csv(PLINK_DIR / "genotypes.map", sep="\t", header=False, index=False)
 
 
+def _class_counts(df: pd.DataFrame) -> pd.DataFrame:
+    """Per-SNP genotype-class counts from the numeric matrix
+    (0 = hom REF/major, 1 = het, 2 = hom ALT/minor, NaN = missing)."""
+    v = df.to_numpy(dtype=np.float64, copy=False)
+    n_homref = np.nansum(v == 0, axis=1).astype(int)
+    n_het = np.nansum(v == 1, axis=1).astype(int)
+    n_homalt = np.nansum(v == 2, axis=1).astype(int)
+    n_miss = np.isnan(v).sum(axis=1).astype(int)
+    called = (n_homref + n_het + n_homalt)
+    denom = np.where(called > 0, called, 1)
+    return pd.DataFrame({
+        "n_homref": n_homref, "n_het": n_het, "n_homalt": n_homalt,
+        "n_missing": n_miss,
+        "frac_homref": np.round(n_homref / denom, 4),
+        "frac_het": np.round(n_het / denom, 4),
+        "frac_homalt": np.round(n_homalt / denom, 4),
+    }, index=df.index)
+
+
+def _write_filtered(records: pd.DataFrame, mode: str) -> None:
+    """Append/initialise QC_DIR/filtered_snps.tsv — one row per dropped SNP
+    with the filter that removed it and its genotype-class breakdown.
+    Aggregate per-variant stats only (no per-individual data)."""
+    QC_DIR.mkdir(parents=True, exist_ok=True)
+    out = QC_DIR / "filtered_snps.tsv"
+    header = mode == "w"
+    records.to_csv(out, sep="\t", mode=mode, header=header, index=False)
+
+
 def filter_qc(numeric: pd.DataFrame) -> pd.DataFrame:
+    cc = _class_counts(numeric)  # per-SNP class counts on the full matrix
+    dropped: list[pd.DataFrame] = []
+
+    def _record(idx, reason, **extra):
+        if len(idx) == 0:
+            return
+        r = cc.loc[idx].reset_index()  # 'rsid' + class counts
+        r.insert(1, "filter", reason)
+        for k, val in extra.items():
+            r[k] = np.round(np.asarray(val), 6)
+        dropped.append(r)
+
     with timed("Applying call-rate and MAF filters"):
         mat = numeric
         snp_missing = mat.isna().mean(axis=1)
         ind_missing = mat.isna().mean(axis=0)
+
+        geno_fail = snp_missing.index[snp_missing > GENO]
+        _record(geno_fail, "call_rate",
+                 call_rate=(1.0 - snp_missing.loc[geno_fail]).to_numpy())
+        n_ind_dropped = int((ind_missing > MIND).sum())
+
         mat = mat.loc[snp_missing <= GENO, ind_missing <= MIND]
 
         values = mat.to_numpy(dtype=np.float64, copy=False)
         alt_freq = np.nanmean(values, axis=1) / 2.0
-        maf_vals = np.minimum(alt_freq, 1.0 - alt_freq)
+        maf_vals = pd.Series(np.minimum(alt_freq, 1.0 - alt_freq),
+                             index=mat.index)
+        maf_fail = maf_vals.index[maf_vals < MAF]
+        _record(maf_fail, "maf", maf=maf_vals.loc[maf_fail].to_numpy())
         mat = mat.loc[maf_vals >= MAF]
-        log.info("After call-rate/MAF filters: %s SNPs x %s samples", mat.shape[0], mat.shape[1])
+        log.info("After call-rate/MAF filters: %s SNPs x %s samples "
+                 "(call_rate dropped %d, maf dropped %d, %d samples dropped "
+                 "by --mind)", mat.shape[0], mat.shape[1],
+                 len(geno_fail), len(maf_fail), n_ind_dropped)
 
     with timed("Applying vectorized HWE filter"):
         values = mat.to_numpy(dtype=np.float64, copy=False)
@@ -296,8 +360,25 @@ def filter_qc(numeric: pd.DataFrame) -> pd.DataFrame:
         p_values = stats.chi2.sf(chi2, df=1)
         zero_expected = (exp_hom_ref < 1e-6) | (exp_het < 1e-6) | (exp_hom_alt < 1e-6)
         keep = (p_values >= HWE_P) | zero_expected
+        hwe_fail = mat.index[~keep]
+        _record(hwe_fail, "hwe",
+                hwe_p=p_values[~keep])
         mat = mat.loc[keep]
-        log.info("After HWE filter: %s SNPs x %s samples", mat.shape[0], mat.shape[1])
+        log.info("After HWE filter: %s SNPs x %s samples (hwe dropped %d)",
+                 mat.shape[0], mat.shape[1], len(hwe_fail))
+
+    if dropped:
+        allcols = ["rsid", "filter", "n_homref", "n_het", "n_homalt",
+                   "n_missing", "frac_homref", "frac_het", "frac_homalt",
+                   "call_rate", "maf", "hwe_p"]
+        out = pd.concat(dropped, ignore_index=True)
+        for c in allcols:
+            if c not in out.columns:
+                out[c] = ""
+        _write_filtered(out[allcols], "w")
+        summary = out["filter"].value_counts().to_dict()
+        log.info("QC drops by filter: %s -> %s", summary,
+                 os.path.relpath(QC_DIR / "filtered_snps.tsv", BASE_DIR))
 
     return mat
 
@@ -325,7 +406,19 @@ def ld_prune_fast(mat: pd.DataFrame) -> pd.DataFrame:
             selected[candidates[r * r > LD_R2]] = False
 
         pruned = mat.iloc[selected]
-        log.info("After LD pruning: %s SNPs retained from %s", pruned.shape[0], n_snps)
+        ld_dropped = mat.index[~selected]
+        if len(ld_dropped) > 0:
+            r = _class_counts(mat.loc[ld_dropped]).reset_index()
+            r.insert(1, "filter", "ld_prune")
+            for c in ("call_rate", "maf", "hwe_p"):
+                r[c] = ""
+            _write_filtered(r[["rsid", "filter", "n_homref", "n_het",
+                               "n_homalt", "n_missing", "frac_homref",
+                               "frac_het", "frac_homalt", "call_rate",
+                               "maf", "hwe_p"]], "a")
+        log.info("After LD pruning: %s SNPs retained from %s "
+                 "(ld_prune dropped %d, appended to filtered_snps.tsv)",
+                 pruned.shape[0], n_snps, len(ld_dropped))
         return pruned
 
 
@@ -395,7 +488,7 @@ def scatter_pca(df: pd.DataFrame, pc_x: str, pc_y: str, var_exp: list[float], ou
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
     plt.close(fig)
-    log.info("Saved plot -> %s", out_path)
+    log.info("Saved plot -> %s", os.path.basename(str(out_path)))
 
 
 def plot_pca() -> None:
@@ -415,7 +508,7 @@ def main() -> None:
         path.mkdir(parents=True, exist_ok=True)
 
     samples = discover_samples()
-    log.info("Discovered samples: %s", ", ".join(sample_id for sample_id, _ in samples))
+    log.info("Discovered %d samples", len(samples))
 
     matrix, snp_info = load_and_merge(samples)
     chars = genotype_chars(matrix)

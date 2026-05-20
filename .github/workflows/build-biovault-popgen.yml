@@ -1,0 +1,142 @@
+name: build-biovault-popgen
+
+# Builds the biovault-popgen image and publishes it to GHCR on merge to
+# main (or manual dispatch). Tags: <version>, latest, sha-<short>.
+#
+# IMPORTANT — reference data is NOT regenerated in CI.
+# build_docker.sh can mirror the gnomAD HT and derive the AIMs AF table
+# from ~260 GB of HGDP+TGP VCFs. That is infeasible on a hosted runner.
+# This workflow restores the small pre-derived reference cache
+# (.docker/reference/{pca_loadings,aims} ≈ 80 MB) from actions/cache and
+# FAILS FAST if it is absent — it never attempts the gsutil/Hail/VCF path.
+#
+# Priming the cache (one-time, by a maintainer):
+#   1. Locally run `bash build_docker.sh` so .docker/reference/ is populated
+#      (gnomad.v3.1.pca_loadings.ht, loadings_variants.tsv, loadings.npz,
+#       aims/gnomad_af_per_locus.tsv).
+#   2. Push that cache via the `prime-reference-cache` manual dispatch
+#      (uploads it under the cache key below), or attach it as a release
+#      asset and adjust the restore step. Tune to taste — this is a first
+#      cut; the owner/tags/cache strategy are expected to be iterated.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - environment.yml
+      - build_docker.sh
+      - "03_individual_level/**/scripts/**"
+      - "04_population_level/fst_aims_fast/scripts/**"
+      - .github/workflows/build-biovault-popgen.yml
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image version tag (defaults to build_docker.sh VERSION)"
+        required: false
+        default: ""
+
+concurrency:
+  group: build-biovault-popgen-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # Resolves to the org/user that owns the repo running this action.
+  # Adjust here once you see the published path you want.
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/biovault-popgen
+  REF_CACHE_KEY: biovault-popgen-refs-v1
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        run: |
+          # The runtime image is ~6.5 GB + a heavy conda build; hosted
+          # runners only ship ~14 GB free. Reclaim the obvious bloat.
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL || true
+          docker system prune -af || true
+          df -h /
+
+      - name: Restore reference cache (.docker/reference)
+        id: refcache
+        uses: actions/cache@v4
+        with:
+          path: .docker/reference
+          key: ${{ env.REF_CACHE_KEY }}
+          # Restore-only: this workflow never regenerates the cache, so a
+          # partial/older key is useless — require an exact hit.
+          lookup-only: false
+
+      - name: Verify reference cache is present (fail fast otherwise)
+        run: |
+          set -euo pipefail
+          missing=0
+          for f in \
+            .docker/reference/pca_loadings/gnomad.v3.1.pca_loadings.ht/_SUCCESS \
+            .docker/reference/pca_loadings/loadings_variants.tsv \
+            .docker/reference/pca_loadings/loadings.npz \
+            .docker/reference/aims/gnomad_af_per_locus.tsv ; do
+            if [ ! -s "$f" ] && [ ! -e "$f" ]; then
+              echo "::error::missing reference cache file: $f"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Reference cache absent. CI will NOT regenerate it"
+            echo "::error::(needs gsutil + Hail + ~260 GB VCFs). Prime the"
+            echo "::error::actions cache key '${REF_CACHE_KEY}' first — see"
+            echo "::error::the header comment in this workflow."
+            exit 1
+          fi
+          du -sh .docker/reference/* || true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve version
+        id: ver
+        run: |
+          v="${{ github.event.inputs.version }}"
+          if [ -z "$v" ]; then
+            v="$(grep -oE 'VERSION:-[0-9.]+' build_docker.sh | head -1 | cut -d- -f3)"
+          fi
+          [ -n "$v" ] || v="0.0.0"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "sha=sha-$(echo "${{ github.sha }}" | cut -c1-12)" >> "$GITHUB_OUTPUT"
+
+      - name: Build image (build_docker.sh, cache-only refs)
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          # Belt & braces: this stays 0 so build_docker.sh's cache-skip
+          # logic never triggers the gsutil/Hail/VCF derivations.
+          FORCE_REFERENCE_CACHE: "0"
+        run: bash build_docker.sh
+
+      - name: Tag + push
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          S="${{ steps.ver.outputs.sha }}"
+          docker tag "${IMAGE_NAME}:${V}" "${IMAGE_NAME}:${S}"
+          docker push "${IMAGE_NAME}:${V}"
+          docker push "${IMAGE_NAME}:latest"
+          docker push "${IMAGE_NAME}:${S}"
+          echo "Published:"
+          echo "  ${IMAGE_NAME}:${V}"
+          echo "  ${IMAGE_NAME}:latest"
+          echo "  ${IMAGE_NAME}:${S}"
