@@ -6,6 +6,21 @@ __pycache__/
 # Local runtime caches
 .cache/
 .docker/
+!.docker/
+!.docker/reference/
+!.docker/reference/pca_loadings/
+.docker/reference/pca_loadings/*
+!.docker/reference/pca_loadings/loadings_variants.tsv
+!.docker/reference/pca_loadings/loadings.npz
+!.docker/reference/pca_loadings/gnomad.v3.1.pca_loadings.ht.tar.gz
+!.docker/reference/aims/
+.docker/reference/**/*.log
+.docker/reference/**/*.crc
+.docker/reference/pca_loadings/gnomad.v3.1.pca_loadings.ht/
+.docker/reference/aims/*
+!.docker/reference/aims/gnomad_af_per_locus.tsv
+.docker/reference/hgdp_tgp_vcf/
+.docker/conda_envs/
 .claude/
 .bvlr_cache/
 **/.bvlr_cache/

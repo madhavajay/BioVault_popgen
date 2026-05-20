@@ -11,6 +11,7 @@
 # Usage:
 #   bash 04_population_level.sh                 # all participants in mapping
 #   bash 04_population_level.sh --limit 50      # cap per-island participants
+#   bash 04_population_level.sh --slow          # legacy fst_islands + AIMs
 #
 # Overrides: IMAGE, MAPPING, DATA_DIR, RESULTS_ROOT (see 04_run_allele_freq.sh).
 
@@ -19,8 +20,26 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE="${IMAGE:-biovault-popgen:0.1.1}"
 RESULTS_ROOT="${RESULTS_ROOT:-${ROOT_DIR}/results}"
-TASK_DIR="${RESULTS_ROOT}/population_level"
-RAW_DIR="${TASK_DIR}/raw_allele_freq_country"
+SLOW=0
+CLEAN=0
+RUN_ARGS=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        clean) CLEAN=1; shift ;;
+        --slow) SLOW=1; shift ;;
+        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+        *) RUN_ARGS+=("$1"); shift ;;
+    esac
+done
+
+if [ "${SLOW}" = "1" ]; then
+    TASK_DIR="${RESULTS_ROOT}/population_level_slow"
+    RAW_DIR="${TASK_DIR}/work/raw_allele_freq_country"
+else
+    TASK_DIR="${RESULTS_ROOT}/population_level"
+    RAW_DIR="${TASK_DIR}/raw_allele_freq_country"
+fi
 WORK="${TASK_DIR}/work"
 RES="${TASK_DIR}"
 BVLR_DIR="${TASK_DIR}/.bvlr_cache"
@@ -28,7 +47,7 @@ BVLR_DIR="${TASK_DIR}/.bvlr_cache"
 # `clean` wipes the per-participant .bvlr cache + per-country AF + FST/AIMs
 # work/results, forcing a full recompute. Use after a regenerated cohort or
 # a suspected-corrupt cache.
-if [ "${1:-}" = "clean" ]; then
+if [ "${CLEAN}" = "1" ]; then
     echo "== clean: removing ${TASK_DIR} =="
     rm -rf "${TASK_DIR}"
     echo "cleaned. re-run without 'clean' to recompute."
@@ -36,7 +55,7 @@ if [ "${1:-}" = "clean" ]; then
 fi
 
 echo "== Stage A: per-country allele frequencies =="
-OUT_DIR="${RAW_DIR}" BVLR_DIR="${BVLR_DIR}" bash "${ROOT_DIR}/04_run_allele_freq.sh" "$@"
+OUT_DIR="${RAW_DIR}" BVLR_DIR="${BVLR_DIR}" bash "${ROOT_DIR}/04_run_allele_freq.sh" "${RUN_ARGS[@]}"
 python3 - "$ROOT_DIR" "$RAW_DIR" <<'PY'
 from pathlib import Path
 import sys
@@ -69,6 +88,77 @@ for ln in mapping.read_text().splitlines()[1:]:
     lines.append(f"{pid}\t{norm(country)}")
 (raw / "country_map.tsv").write_text("\n".join(lines) + "\n")
 PY
+
+if [ "${SLOW}" = "1" ]; then
+    # The legacy FST runner predates normalized flow filenames and expects
+    # title-case island files. Keep Stage A's normalized files, but add
+    # compatibility copies for the original scripts.
+    cp "${RAW_DIR}/allele_freq_bvi.tsv"      "${RAW_DIR}/allele_freq_BVI.tsv"      2>/dev/null || true
+    cp "${RAW_DIR}/allele_freq_tt.tsv"       "${RAW_DIR}/allele_freq_TT.tsv"       2>/dev/null || true
+    cp "${RAW_DIR}/allele_freq_bahamas.tsv"  "${RAW_DIR}/allele_freq_Bahamas.tsv"  2>/dev/null || true
+    cp "${RAW_DIR}/allele_freq_barbados.tsv" "${RAW_DIR}/allele_freq_Barbados.tsv" 2>/dev/null || true
+    cp "${RAW_DIR}/allele_freq_bermuda.tsv"  "${RAW_DIR}/allele_freq_Bermuda.tsv"  2>/dev/null || true
+    cp "${RAW_DIR}/allele_freq_stlucia.tsv"  "${RAW_DIR}/allele_freq_StLucia.tsv"  2>/dev/null || true
+
+    echo
+    echo "== Stage B: legacy FST + AIMs (${IMAGE}) =="
+    rm -rf "${WORK}/fst_islands" "${WORK}/aims_differential_snps"
+    mkdir -p "${WORK}/fst_islands/scripts" "${WORK}/aims_differential_snps/scripts" "${RES}"
+    cp "${ROOT_DIR}/04_population_level/fst_islands/scripts/"* "${WORK}/fst_islands/scripts/"
+    cp "${ROOT_DIR}/04_population_level/aims_differential_snps/scripts/"* "${WORK}/aims_differential_snps/scripts/"
+    docker run --rm \
+        --platform linux/amd64 \
+        -u "$(id -u):$(id -g)" \
+        -v "${ROOT_DIR}:${ROOT_DIR}" \
+        -w "${WORK}" \
+        "${IMAGE}" bash -c '
+            set -euo pipefail
+            if ! getent passwd "$(id -u)" >/dev/null 2>&1; then
+                echo "biovault:x:$(id -u):$(id -g):biovault:/tmp:/bin/bash" >> /etc/passwd
+            fi
+            export HOME=/tmp
+            source /opt/conda/etc/profile.d/conda.sh
+            conda activate biovault_popgen
+            bash "'"${WORK}"'/fst_islands/scripts/run_pipeline.sh"
+            mkdir -p "'"${WORK}"'/aims_differential_snps/results" "'"${WORK}"'/aims_differential_snps/data" "'"${WORK}"'/aims_differential_snps/logs"
+            cp /opt/biovault/reference/aims/gnomad_af_per_locus.tsv \
+                "'"${WORK}"'/aims_differential_snps/results/gnomad_v4_af_per_locus.tsv"
+            python3 "'"${WORK}"'/aims_differential_snps/scripts/04_merge_carib_gnomad.py"
+            python3 "'"${WORK}"'/aims_differential_snps/scripts/05_differential_snps_per_island.py"
+            python3 "'"${WORK}"'/aims_differential_snps/scripts/06_AIMs_dendrogram.py"
+        '
+
+    cp "${WORK}/fst_islands/data/fst/fst_matrix.tsv"                                "${RES}/" 2>/dev/null || true
+    cp "${WORK}/fst_islands/data/merged/merged_allele_freq_annotated.tsv"           "${RES}/" 2>/dev/null || true
+    cp "${WORK}/aims_differential_snps/data/master_af_table.tsv"                    "${RES}/" 2>/dev/null || true
+    cp "${WORK}/aims_differential_snps/data/differential_snps/all_outliers_long.tsv" "${RES}/" 2>/dev/null || true
+    cp "${WORK}/aims_differential_snps/data/aims/aims_combined.tsv"                 "${RES}/" 2>/dev/null || true
+    cp "${RAW_DIR}/country_map.tsv"                                                 "${RES}/" 2>/dev/null || true
+    {
+        POPS="$(find "${RAW_DIR}" -maxdepth 1 -name 'allele_freq_*.tsv' -exec basename {} .tsv \; \
+            | sed 's/^allele_freq_//' | sort | paste -sd, -)"
+        echo "Populations: ${POPS}"
+        echo ""
+        echo "=== FST matrix ==="
+        cat "${WORK}/fst_islands/data/fst/fst_matrix.tsv"
+        echo ""
+        echo "=== master_af_table summary ==="
+        cat "${WORK}/aims_differential_snps/data/master_af_table_summary.txt"
+    } > "${RES}/population_level_summary.txt" 2>/dev/null || true
+    cp "${WORK}"/fst_islands/plots/*.png "${WORK}"/fst_islands/plots/*.pdf \
+       "${WORK}"/aims_differential_snps/plots/*.png "${WORK}"/aims_differential_snps/plots/*.pdf \
+       "${RES}/" 2>/dev/null || true
+
+    echo
+    echo "=== population-level legacy outputs -> ${RES} ==="
+    for f in fst_matrix.tsv merged_allele_freq_annotated.tsv master_af_table.tsv \
+             all_outliers_long.tsv aims_combined.tsv country_map.tsv population_level_summary.txt; do
+        p="${RES}/${f}"
+        if [ -e "${p}" ]; then printf '  %s  (%s)\n' "${f}" "$(du -h "${p}" | cut -f1)"
+        else printf '  %s  (missing)\n' "${f}"; fi
+    done
+    exit 0
+fi
 
 echo
 echo "== Stage B: FST + AIMs (${IMAGE}) =="

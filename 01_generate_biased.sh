@@ -14,6 +14,7 @@
 #   bash 01_generate_biased.sh                 # 100 participants, seed 100
 #   bash 01_generate_biased.sh --count 1000    # scale up
 #   bash 01_generate_biased.sh --count 100 --seed 7
+#   bash 01_generate_biased.sh --slow          # accepted; no fast variant
 #
 # bvs: host (0.1.22, == pinned container) by default; fast, no docker.
 
@@ -26,6 +27,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --count) COUNT="$2"; shift 2 ;;
         --seed)  SEED="$2";  shift 2 ;;
+        --slow)  shift ;;
         -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
         *) echo "ERROR: unknown arg: $1" >&2; exit 2 ;;
     esac

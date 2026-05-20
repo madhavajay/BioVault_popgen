@@ -7,12 +7,15 @@
 #   --fast           gnomad_projection_fast — numpy projection (bit-identical)
 #   --qc             pca_qc_fast            — within-cohort QC + cohort PCA
 #   --sex            sex_biased_admixture_fast — X-hemizygosity / sex facet
+#   --slow           use the non-_fast implementation for the selected mode
 #
 # Usage:
 #   bash 03_individual_level.sh              # all participants, projection
 #   bash 03_individual_level.sh --fast 50    # 50 participants, fast projection
 #   bash 03_individual_level.sh --qc 3       # 3 participants, qc
+#   bash 03_individual_level.sh --qc --slow  # original pca_qc -> results/pca_qc
 #   bash 03_individual_level.sh --sex 100    # 100 participants, sex-bias
+#   bash 03_individual_level.sh --sex --slow # original sex_biased_admixture
 #
 # Overrides:
 #   SAMPLES_SRC=/path/to/dir
@@ -28,15 +31,17 @@ SUBSET_DIR="${ROOT_DIR}/03_individual_level/.samples"
 RESULTS_ROOT="${RESULTS_ROOT:-${ROOT_DIR}/results}"
 
 MODE="projection"
+SLOW=0
 N=""
 for arg in "$@"; do
     case "${arg}" in
         --qc)        MODE="qc" ;;
         --fast)      MODE="projection_fast" ;;
         --sex)       MODE="sex" ;;
+        --slow)      SLOW=1 ;;
         --proj*)     MODE="projection" ;;
         -h|--help)
-            sed -n '2,18p' "$0"
+            sed -n '2,21p' "$0"
             exit 0
             ;;
         *)
@@ -49,6 +54,15 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+if [ "${SLOW}" = "1" ]; then
+    case "${MODE}" in
+        qc)              MODE="qc_slow" ;;
+        sex)             MODE="sex_slow" ;;
+        projection_fast) MODE="projection" ;;
+        projection)      MODE="projection" ;;
+    esac
+fi
 
 [ -d "${SAMPLES_SRC}" ] || { echo "ERROR: samples src missing: ${SAMPLES_SRC}" >&2; exit 1; }
 
@@ -78,6 +92,72 @@ done
 # --- mode dispatch ----------------------------------------------------------
 
 case "${MODE}" in
+qc_slow)
+    PIPELINE_DIR="${ROOT_DIR}/03_individual_level/pca_qc"
+    FAST_DIR="${ROOT_DIR}/03_individual_level/pca_qc_fast"
+    TASK_DIR="${RESULTS_ROOT}/pca_qc"
+    WORK_BASE="${TASK_DIR}/work/pca_qc"
+    rm -rf "${TASK_DIR}"
+    mkdir -p "${WORK_BASE}/scripts" "${WORK_BASE}/data" "${WORK_BASE}/plots" "${WORK_BASE}/logs"
+    cp "${PIPELINE_DIR}/scripts/"*.py "${WORK_BASE}/scripts/"
+    cp "${PIPELINE_DIR}/scripts/"*.sh "${WORK_BASE}/scripts/"
+    cp "${FAST_DIR}/scripts/genoio.py" "${WORK_BASE}/scripts/"
+    echo "Running pca_qc (original Python QC + PCA) in ${IMAGE} ..."
+    docker run --rm \
+        --platform linux/amd64 \
+        -u "$(id -u):$(id -g)" \
+        -v "${ROOT_DIR}:${ROOT_DIR}" \
+        -w "${WORK_BASE}" \
+        -e BIOVAULT_DATA_DIR="${SUBSET_DIR}" \
+        "${IMAGE}" \
+        bash -c '
+            set -euo pipefail
+            USER_ID="$(id -u)"; GROUP_ID="$(id -g)"
+            if ! getent passwd "${USER_ID}" >/dev/null 2>&1; then
+                echo "biovault:x:${USER_ID}:${GROUP_ID}:biovault:/tmp:/bin/bash" >> /etc/passwd
+            fi
+            if ! getent group "${GROUP_ID}" >/dev/null 2>&1; then
+                echo "biovault:x:${GROUP_ID}:" >> /etc/group
+            fi
+            export HOME=/tmp
+            source /opt/conda/etc/profile.d/conda.sh
+            conda activate biovault_popgen
+            bash '"${WORK_BASE}"'/scripts/run_pipeline.sh
+        '
+    mkdir -p "${TASK_DIR}"
+    cp "${WORK_BASE}/data/pca/pca.eigenvec" "${TASK_DIR}/" 2>/dev/null || true
+    cp "${WORK_BASE}/data/pca/pca.eigenval" "${TASK_DIR}/" 2>/dev/null || true
+    cp "${WORK_BASE}/data/merged/snp_info.tsv" "${TASK_DIR}/" 2>/dev/null || true
+    cp "${WORK_BASE}/plots/pca_pc1_pc2.png" "${TASK_DIR}/" 2>/dev/null || true
+    cp "${WORK_BASE}/plots/pca_pc3_pc4.png" "${TASK_DIR}/" 2>/dev/null || true
+    cp "${WORK_BASE}/logs/01_merge.log" "${TASK_DIR}/" 2>/dev/null || true
+    cp "${WORK_BASE}/logs/02_encode.log" "${TASK_DIR}/" 2>/dev/null || true
+    cp "${WORK_BASE}/logs/03b_python_pca.log" "${TASK_DIR}/" 2>/dev/null || true
+    cp "${WORK_BASE}/logs/04_plot_pca.log" "${TASK_DIR}/" 2>/dev/null || true
+    echo
+    echo "=== pca_qc outputs (N=${N}) -> ${TASK_DIR} ==="
+    for f in \
+        "${TASK_DIR}/snp_info.tsv" \
+        "${TASK_DIR}/pca.eigenvec" \
+        "${TASK_DIR}/pca.eigenval" \
+        "${TASK_DIR}/pca_pc1_pc2.png" \
+        "${TASK_DIR}/pca_pc3_pc4.png" \
+        "${TASK_DIR}/01_merge.log" \
+        "${TASK_DIR}/02_encode.log" \
+        "${TASK_DIR}/03b_python_pca.log" \
+        "${TASK_DIR}/04_plot_pca.log" \
+        "${WORK_BASE}/data/merged/genotype_matrix_raw.tsv" \
+        "${WORK_BASE}/data/merged/genotype_matrix_numeric.tsv" \
+        "${WORK_BASE}/data/plink/genotypes.ped" \
+        "${WORK_BASE}/data/plink/genotypes.map"; do
+        if [ -e "${f}" ]; then
+            printf '  %s  (%s)\n' "${f}" "$(du -h "${f}" | cut -f1)"
+        else
+            printf '  %s  (missing)\n' "${f}"
+        fi
+    done
+    ;;
+
 qc)
     PIPELINE_DIR="${ROOT_DIR}/03_individual_level/pca_qc_fast"
     TASK_DIR="${RESULTS_ROOT}/pca_qc_fast"
@@ -177,6 +257,56 @@ sex)
         cp "${WORK_ORIG}/logs/sex_biased_admixture.log" "${TASK_DIR}/" 2>/dev/null || true
     echo
     echo "=== sex_biased_admixture_fast outputs (N=${N}) -> ${TASK_DIR} ==="
+    for f in \
+        "${TASK_DIR}/sex_bias_results.tsv" \
+        "${TASK_DIR}/figure4_sex_biased_admixture.png" \
+        "${TASK_DIR}/figure4_sex_biased_admixture.pdf" \
+        "${TASK_DIR}/sex_biased_admixture.log"; do
+        if [ -e "${f}" ]; then
+            printf '  %s  (%s)\n' "${f}" "$(du -h "${f}" | cut -f1)"
+        else
+            printf '  %s  (missing)\n' "${f}"
+        fi
+    done
+    ;;
+
+sex_slow)
+    PIPELINE_DIR="${ROOT_DIR}/03_individual_level/sex_biased_admixture"
+    TASK_DIR="${RESULTS_ROOT}/sex_biased_admixture"
+    WORK_BASE="${TASK_DIR}/work/sex_biased_admixture"
+    rm -rf "${TASK_DIR}"
+    mkdir -p "${WORK_BASE}/scripts"
+    cp "${PIPELINE_DIR}/scripts/"*.py "${WORK_BASE}/scripts/"
+    echo "Running sex_biased_admixture (original analysis) in ${IMAGE} ..."
+    docker run --rm \
+        --platform linux/amd64 \
+        -u "$(id -u):$(id -g)" \
+        -v "${ROOT_DIR}:${ROOT_DIR}" \
+        -w "${WORK_BASE}" \
+        -e BIOVAULT_DATA_DIR="${SUBSET_DIR}" \
+        -e BIOVAULT_SEX_MAPPING="${SAMPLES_SRC}/sex_mapping.tsv" \
+        "${IMAGE}" \
+        bash -c '
+            set -euo pipefail
+            USER_ID="$(id -u)"; GROUP_ID="$(id -g)"
+            if ! getent passwd "${USER_ID}" >/dev/null 2>&1; then
+                echo "biovault:x:${USER_ID}:${GROUP_ID}:biovault:/tmp:/bin/bash" >> /etc/passwd
+            fi
+            if ! getent group "${GROUP_ID}" >/dev/null 2>&1; then
+                echo "biovault:x:${GROUP_ID}:" >> /etc/group
+            fi
+            export HOME=/tmp
+            source /opt/conda/etc/profile.d/conda.sh
+            conda activate biovault_popgen
+            python3 '"${WORK_BASE}"'/scripts/sex_biased_admixture.py
+        '
+    mkdir -p "${TASK_DIR}"
+    cp "${WORK_BASE}/results/sex_bias_results.tsv" "${TASK_DIR}/" 2>/dev/null || true
+    cp "${WORK_BASE}/plots/figure4_sex_biased_admixture.png" "${TASK_DIR}/" 2>/dev/null || true
+    cp "${WORK_BASE}/plots/figure4_sex_biased_admixture.pdf" "${TASK_DIR}/" 2>/dev/null || true
+    cp "${WORK_BASE}/logs/sex_biased_admixture.log" "${TASK_DIR}/" 2>/dev/null || true
+    echo
+    echo "=== sex_biased_admixture outputs (N=${N}) -> ${TASK_DIR} ==="
     for f in \
         "${TASK_DIR}/sex_bias_results.tsv" \
         "${TASK_DIR}/figure4_sex_biased_admixture.png" \

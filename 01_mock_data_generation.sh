@@ -14,6 +14,7 @@
 #   --min N         Minimum participants per island (default 100)
 #   --threads N     Biosynth thread count (default: host CPU count)
 #   --no-clean      Don't wipe ${OUTPUT_DIR} before regenerating
+#   --slow          Accepted for consistency; generation has no fast variant
 
 set -euo pipefail
 
@@ -35,6 +36,7 @@ while [ $# -gt 0 ]; do
         --min)       MIN_PER_ISLAND="$2"; shift 2 ;;
         --threads)   THREADS="$2"; shift 2 ;;
         --no-clean)  CLEAN=0; shift ;;
+        --slow)      shift ;;
         -h|--help)
             sed -n '2,18p' "$0"
             exit 0

@@ -15,17 +15,22 @@ import logging
 import pandas as pd
 from pathlib import Path
 
+try:
+    import genoio as _genoio
+except ImportError:
+    _genoio = None
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 BASE_DIR   = Path(__file__).resolve().parents[1]          # pipeline/
-DATA_DIR   = BASE_DIR.parent                              # out_copy/ — sample folders live here
+DATA_DIR   = Path(os.environ.get("BIOVAULT_DATA_DIR", BASE_DIR.parent))
 OUT_DIR    = BASE_DIR / "data" / "merged"
 LOG_DIR    = BASE_DIR / "logs"
 
 SAMPLE_DIRS = [
     d for d in DATA_DIR.iterdir()
-    if d.is_dir() and d.name not in {"pipeline", "raw_allele_freq_country"}
+    if d.is_dir() and d.name.isdigit()
 ]
 
 COLS = ["rsid", "chromosome", "position", "genotype", "gs", "baf", "lrr"]
@@ -58,6 +63,12 @@ def find_genotype_file(sample_dir: Path) -> Path:
 
 def read_genotype_file(path: Path) -> pd.DataFrame:
     """Read a genotype file, skipping comment lines."""
+    if _genoio is not None:
+        df = _genoio.read_genotypes(path).rename(
+            columns={"chrom": "chromosome", "pos": "position", "gt": "genotype"}
+        )
+        return df[["rsid", "chromosome", "position", "genotype", "gs", "baf", "lrr"]]
+
     df = pd.read_csv(
         path,
         sep="\t",

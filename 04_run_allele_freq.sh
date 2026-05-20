@@ -8,6 +8,7 @@
 # Usage:
 #   bash 04_run_allele_freq.sh                       # use all participants in mapping
 #   bash 04_run_allele_freq.sh --limit 50            # cap per-island participants
+#   bash 04_run_allele_freq.sh --slow                # accepted; no fast variant
 #
 # Overrides (env):
 #   MAPPING        island_mapping.tsv path
@@ -46,6 +47,7 @@ LIMIT=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --limit) LIMIT="$2"; shift 2 ;;
+        --slow) shift ;;
         -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
         *) echo "ERROR: unknown arg: $1" >&2; exit 2 ;;
     esac

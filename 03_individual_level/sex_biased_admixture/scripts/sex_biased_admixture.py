@@ -42,6 +42,7 @@ Outputs
 """
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -64,6 +65,7 @@ SCRIPT_DIR  = Path(__file__).resolve().parent
 BASE        = SCRIPT_DIR.parent                          # sex_biased_admixture/
 REPO_ROOT   = BASE.parents[1]                            # BioVault_popgen/
 DATA_DIR    = REPO_ROOT / "01_mock_data_generation" / "output"
+DATA_DIR    = Path(os.environ.get("BIOVAULT_DATA_DIR", DATA_DIR))
 PLOTS_DIR   = BASE / "plots"
 RESULTS_DIR = BASE / "results"
 LOGS_DIR    = BASE / "logs"

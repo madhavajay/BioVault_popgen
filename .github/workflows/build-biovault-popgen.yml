@@ -82,7 +82,7 @@ jobs:
           set -euo pipefail
           missing=0
           for f in \
-            .docker/reference/pca_loadings/gnomad.v3.1.pca_loadings.ht/_SUCCESS \
+            .docker/reference/pca_loadings/gnomad.v3.1.pca_loadings.ht.tar.gz \
             .docker/reference/pca_loadings/loadings_variants.tsv \
             .docker/reference/pca_loadings/loadings.npz \
             .docker/reference/aims/gnomad_af_per_locus.tsv ; do

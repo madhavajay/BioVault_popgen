@@ -19,6 +19,7 @@ TOOLS_IMAGE="${TOOLS_IMAGE:-${IMAGE_NAME}:tools}"
 LOADINGS_HT_SOURCE="${LOADINGS_HT_SOURCE:-gs://gcp-public-data--gnomad/release/3.1/pca/gnomad.v3.1.pca_loadings.ht}"
 CACHE_DIR="${ROOT_DIR}/.docker/reference/pca_loadings"
 CACHED_HT="${CACHE_DIR}/gnomad.v3.1.pca_loadings.ht"
+CACHED_HT_TAR="${CACHE_DIR}/gnomad.v3.1.pca_loadings.ht.tar.gz"
 CACHED_TSV="${CACHE_DIR}/loadings_variants.tsv"
 AIMS_CACHE_DIR="${ROOT_DIR}/.docker/reference/aims"
 AIMS_AF_TSV="${AIMS_CACHE_DIR}/gnomad_af_per_locus.tsv"
@@ -31,6 +32,15 @@ docker build \
   -f "${ROOT_DIR}/Dockerfile" \
   -t "${TOOLS_IMAGE}" \
   "${ROOT_DIR}"
+
+# A fresh clone may carry the compact committed archive instead of the
+# expanded 11k-file Hail Table directory. Expand it before the cache check so
+# the rest of the build path stays identical for local, CI, and old checkouts.
+if [ ! -f "${CACHED_HT}/_SUCCESS" ] && [ -s "${CACHED_HT_TAR}" ]; then
+  echo "Expanding cached HT archive ${CACHED_HT_TAR}"
+  mkdir -p "${CACHE_DIR}"
+  tar -xzf "${CACHED_HT_TAR}" -C "${CACHE_DIR}"
+fi
 
 # 1. Mirror gnomAD HT to local cache via gsutil. Resumable: rerun to fill in
 #    any missing files. Force a full re-mirror with FORCE_REFERENCE_CACHE=1.
