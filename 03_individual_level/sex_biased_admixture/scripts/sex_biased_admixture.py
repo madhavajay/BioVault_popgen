@@ -498,9 +498,16 @@ def plot_figure(df: pd.DataFrame):
     ax_d.set_xticklabels(ordered["sample_id"].values,
                           rotation=35, ha="right", fontsize=5.0)
     ax_d.set_ylabel("Heterozygosity rate", fontsize=7)
+    # Data-driven annotation: the panel must describe what THIS cohort
+    # actually shows (biased data carries a real X signal; plain
+    # --alt-frequency data does not), not a hardcoded assumption.
+    _mean_auto = float(ordered["auto_het"].mean())
+    _xf = float(ordered["x_het"].iloc[:n_f].mean()) if n_f else float("nan")
+    _xm = float(ordered["x_het"].iloc[n_f:].mean()) if n_m else float("nan")
     ax_d.set_title(
         "Heterozygosity: autosomes vs X chromosome\n"
-        "(real males: X het < auto het; mock data: no difference expected)",
+        f"(mean X het — female {_xf:.2f}, male {_xm:.2f}; "
+        f"autosomal {_mean_auto:.2f})",
         fontsize=7.0, pad=3, fontweight="normal",
     )
     ax_d.spines[["top", "right"]].set_visible(False)
@@ -512,9 +519,16 @@ def plot_figure(df: pd.DataFrame):
         ],
         fontsize=5.8, framealpha=0.7, edgecolor="#cccccc", loc="upper right",
     )
+    _dx = _xf - _xm
+    if np.isfinite(_dx) and abs(_dx) >= 0.05:
+        _note = (
+            f"Female X het {'>' if _dx > 0 else '<'} male X het by "
+            f"{abs(_dx):.2f} — sex-biased X signal present"
+        )
+    else:
+        _note = "No sex difference in X heterozygosity (expected for unbiased data)"
     ax_d.text(
-        0.5, -0.22,
-        "Note (mock data, --alt-frequency 0.5): X het = auto het = 0 for all samples",
+        0.5, -0.22, _note,
         transform=ax_d.transAxes, ha="center", fontsize=5.5,
         color="#888888", style="italic",
     )

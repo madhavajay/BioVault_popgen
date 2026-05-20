@@ -122,7 +122,10 @@ process sex_biased_admixture_fast {
         cp sex_biased_admixture_fast/plots/figure4_sex_biased_admixture.png figure4_sex_biased_admixture.png || true
     [ -f sex_biased_admixture_fast/plots/figure4_sex_biased_admixture.pdf ] && \\
         cp sex_biased_admixture_fast/plots/figure4_sex_biased_admixture.pdf figure4_sex_biased_admixture.pdf || true
-    [ -f sex_biased_admixture_fast/logs/sex_biased_admixture.log ] && \\
-        cp sex_biased_admixture_fast/logs/sex_biased_admixture.log sex_biased_admixture.log || true
+    if [ -f sex_biased_admixture_fast/logs/sex_biased_admixture.log ]; then
+        cp sex_biased_admixture_fast/logs/sex_biased_admixture.log sex_biased_admixture.log
+    elif [ -f sex_biased_admixture/logs/sex_biased_admixture.log ]; then
+        cp sex_biased_admixture/logs/sex_biased_admixture.log sex_biased_admixture.log
+    fi
     """
 }

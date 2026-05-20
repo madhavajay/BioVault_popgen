@@ -173,7 +173,8 @@ sex)
     cp "${WORK_FAST}/results/sex_bias_results.tsv" "${TASK_DIR}/" 2>/dev/null || true
     cp "${WORK_FAST}/plots/figure4_sex_biased_admixture.png" "${TASK_DIR}/" 2>/dev/null || true
     cp "${WORK_FAST}/plots/figure4_sex_biased_admixture.pdf" "${TASK_DIR}/" 2>/dev/null || true
-    cp "${WORK_FAST}/logs/sex_biased_admixture.log" "${TASK_DIR}/" 2>/dev/null || true
+    cp "${WORK_FAST}/logs/sex_biased_admixture.log" "${TASK_DIR}/" 2>/dev/null || \
+        cp "${WORK_ORIG}/logs/sex_biased_admixture.log" "${TASK_DIR}/" 2>/dev/null || true
     echo
     echo "=== sex_biased_admixture_fast outputs (N=${N}) -> ${TASK_DIR} ==="
     for f in \

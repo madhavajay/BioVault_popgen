@@ -37,6 +37,38 @@ fi
 
 echo "== Stage A: per-country allele frequencies =="
 OUT_DIR="${RAW_DIR}" BVLR_DIR="${BVLR_DIR}" bash "${ROOT_DIR}/04_run_allele_freq.sh" "$@"
+python3 - "$ROOT_DIR" "$RAW_DIR" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+raw = Path(sys.argv[2])
+mapping = Path(__import__("os").environ.get(
+    "MAPPING", root / "01_mock_data_generation/output/island_mapping.tsv"
+))
+
+def norm(raw_label: str) -> str:
+    table = {
+        "BVI": "bvi",
+        "TT": "tt",
+        "Bahamas": "bahamas",
+        "Barbados": "barbados",
+        "Bermuda": "bermuda",
+        "StLucia": "stlucia",
+    }
+    if raw_label in table:
+        return table[raw_label]
+    import re
+    return re.sub(r"[^a-z0-9]+", "_", raw_label.strip().lower()).strip("_")
+
+lines = ["participant_id\tcountry"]
+for ln in mapping.read_text().splitlines()[1:]:
+    if not ln.strip():
+        continue
+    pid, country = ln.split("\t")[:2]
+    lines.append(f"{pid}\t{norm(country)}")
+(raw / "country_map.tsv").write_text("\n".join(lines) + "\n")
+PY
 
 echo
 echo "== Stage B: FST + AIMs (${IMAGE}) =="
@@ -74,6 +106,18 @@ cp "${WORK}/fst/data/merged/merged_allele_freq_annotated.tsv"  "${RES}/" 2>/dev/
 cp "${WORK}/aims/data/master_af_table.tsv"                     "${RES}/" 2>/dev/null || true
 cp "${WORK}/aims/data/differential_snps/all_outliers_long.tsv" "${RES}/" 2>/dev/null || true
 cp "${WORK}/aims/data/aims/aims_combined.tsv"                  "${RES}/" 2>/dev/null || true
+cp "${RAW_DIR}/country_map.tsv"                                "${RES}/" 2>/dev/null || true
+{
+    POPS="$(find "${RAW_DIR}" -maxdepth 1 -name 'allele_freq_*.tsv' -exec basename {} .tsv \; \
+        | sed 's/^allele_freq_//' | sort | paste -sd, -)"
+    echo "Populations: ${POPS}"
+    echo ""
+    echo "=== FST matrix ==="
+    cat "${WORK}/fst/data/fst/fst_matrix.tsv"
+    echo ""
+    echo "=== master_af_table summary ==="
+    cat "${WORK}/aims/data/master_af_table_summary.txt"
+} > "${RES}/population_level_summary.txt" 2>/dev/null || true
 cp "${WORK}"/fst/plots/*.png "${WORK}"/aims/plots/*.png "${WORK}"/aims/plots/*.pdf "${RES}/" 2>/dev/null || true
 
 echo
