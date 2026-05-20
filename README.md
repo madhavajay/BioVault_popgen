@@ -5,6 +5,10 @@ individual-level genotype analyses on one side,
 population-level allele-frequency analyses on the other. 
 The repo also documents how the input data are generated and which reference panels are used.
 
+This repository is a fork of the original population-genetics analysis
+work by `kkkathy211`, adapted for BioVault flows, local Docker execution,
+and reproducible synthetic-data testing.
+
 ## Directory layout
 
 ```
