@@ -26,6 +26,8 @@ on:
       - Dockerfile
       - environment.yml
       - build_docker.sh
+      - ".docker/reference/pca_loadings/**"
+      - ".docker/reference/aims/**"
       - "03_individual_level/**/scripts/**"
       - "04_population_level/fst_aims_fast/scripts/**"
       - .github/workflows/build-biovault-popgen.yml
@@ -112,7 +114,7 @@ jobs:
         run: |
           v="${{ github.event.inputs.version }}"
           if [ -z "$v" ]; then
-            v="$(grep -oE 'VERSION:-[0-9.]+' build_docker.sh | head -1 | cut -d- -f3)"
+            v="$(sed -nE 's/^VERSION="\$\{VERSION:-([^}]+)\}".*/\1/p' build_docker.sh | head -1)"
           fi
           [ -n "$v" ] || v="0.0.0"
           echo "version=$v" >> "$GITHUB_OUTPUT"

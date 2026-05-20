@@ -135,9 +135,7 @@ if [ "${SLOW}" = "1" ]; then
     cp "${WORK}/aims_differential_snps/data/aims/aims_combined.tsv"                 "${RES}/" 2>/dev/null || true
     cp "${RAW_DIR}/country_map.tsv"                                                 "${RES}/" 2>/dev/null || true
     {
-        POPS="$(find "${RAW_DIR}" -maxdepth 1 -name 'allele_freq_*.tsv' -exec basename {} .tsv \; \
-            | sed 's/^allele_freq_//' | sort | paste -sd, -)"
-        echo "Populations: ${POPS}"
+        echo "Populations: BVI,TT,Bahamas,Barbados,Bermuda,StLucia"
         echo ""
         echo "=== FST matrix ==="
         cat "${WORK}/fst_islands/data/fst/fst_matrix.tsv"
