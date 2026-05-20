@@ -20,8 +20,6 @@ WORKING="${2:?missing working_dir}"
 OUT_DIR="${3:?missing output_dir}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SLOW_SCRIPTS="/opt/biovault/scripts/gnomad_projection"
-[ -d "${SLOW_SCRIPTS}" ] || SLOW_SCRIPTS="$(cd "${SCRIPT_DIR}/../../gnomad_projection/scripts" && pwd)"
 
 # Mirror the passwd/group + HOME setup from the slow runner so any subprocess
 # that touches the JVM (e.g. extract_loadings_matrix.py during first-time

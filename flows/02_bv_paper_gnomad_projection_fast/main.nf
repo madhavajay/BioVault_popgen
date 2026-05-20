@@ -40,8 +40,7 @@ process gnomad_projection_fast {
     container 'biovault-popgen:0.1.1-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'copy'
-    errorStrategy { params.nextflow.error_strategy }
-    maxRetries { params.nextflow.max_retries }
+    errorStrategy 'terminate'
 
     input:
         tuple val(participant_ids), path(genotype_files)
