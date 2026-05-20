@@ -7,7 +7,7 @@
 //       per-participant `bvs emit-long`, then per-country `bvs aggregate-long`
 //       -> allele_freq_<country_norm>.tsv
 //
-//   population_fst_aims  (biovault-popgen:0.1.1)
+//   population_fst_aims  (biovault-popgen:0.1.1-fast)
 //       FST (load/merge -> WC84 -> visualise) then AIMs (merge w/ bundled
 //       gnomAD ref -> differential SNPs -> AIMs panels)
 //
@@ -147,7 +147,7 @@ process split_allele_freq {
 }
 
 process population_fst_aims {
-    container 'biovault-popgen:0.1.1'
+    container 'biovault-popgen:0.1.1-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'copy'
     errorStrategy { params.nextflow.error_strategy }

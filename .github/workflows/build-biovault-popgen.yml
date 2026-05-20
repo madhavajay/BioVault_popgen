@@ -1,7 +1,8 @@
 name: build-biovault-popgen
 
 # Builds the biovault-popgen image and publishes it to GHCR on merge to
-# main (or manual dispatch). Tags: <version>, latest, sha-<short>.
+# main (or manual dispatch). Tags: <version>, latest, sha-<short>,
+# <version>-fast, fast, sha-<short>-fast.
 #
 # IMPORTANT — reference data is NOT regenerated in CI.
 # build_docker.sh can mirror the gnomAD HT and derive the AIMs AF table
@@ -25,6 +26,7 @@ on:
     paths:
       - Dockerfile
       - environment.yml
+      - environment.fast.yml
       - build_docker.sh
       - ".docker/reference/pca_loadings/**"
       - ".docker/reference/aims/**"
@@ -135,10 +137,17 @@ jobs:
           V="${{ steps.ver.outputs.version }}"
           S="${{ steps.ver.outputs.sha }}"
           docker tag "${IMAGE_NAME}:${V}" "${IMAGE_NAME}:${S}"
+          docker tag "${IMAGE_NAME}:${V}-fast" "${IMAGE_NAME}:${S}-fast"
           docker push "${IMAGE_NAME}:${V}"
           docker push "${IMAGE_NAME}:latest"
           docker push "${IMAGE_NAME}:${S}"
+          docker push "${IMAGE_NAME}:${V}-fast"
+          docker push "${IMAGE_NAME}:fast"
+          docker push "${IMAGE_NAME}:${S}-fast"
           echo "Published:"
           echo "  ${IMAGE_NAME}:${V}"
           echo "  ${IMAGE_NAME}:latest"
           echo "  ${IMAGE_NAME}:${S}"
+          echo "  ${IMAGE_NAME}:${V}-fast"
+          echo "  ${IMAGE_NAME}:fast"
+          echo "  ${IMAGE_NAME}:${S}-fast"

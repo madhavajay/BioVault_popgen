@@ -67,3 +67,54 @@ WORKDIR /work
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["bash"]
+
+FROM condaforge/miniforge3:24.11.3-0 AS fast-tools
+
+SHELL ["/bin/bash", "-lc"]
+
+ENV CONDA_ENV=biovault_popgen
+ENV PATH=/opt/conda/envs/biovault_popgen/bin:/opt/conda/bin:$PATH
+ENV MPLCONFIGDIR=/tmp/matplotlib
+ENV XDG_CACHE_HOME=/tmp/.cache
+ENV LOADINGS_NPZ=/opt/biovault/reference/pca_loadings/loadings.npz
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      bash \
+      ca-certificates \
+      coreutils \
+      findutils \
+      gawk \
+      gzip \
+      less \
+      procps \
+      sed \
+      time \
+      tini && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY environment.fast.yml /tmp/environment.fast.yml
+
+RUN conda env create -p "/opt/conda/envs/${CONDA_ENV}" -f /tmp/environment.fast.yml && \
+    conda clean -afy && \
+    rm -f /tmp/environment.fast.yml
+
+FROM fast-tools AS fast-runtime
+
+RUN mkdir -p /opt/biovault/reference/pca_loadings /opt/biovault/reference/aims /opt/biovault/scripts && \
+    chmod 666 /etc/passwd /etc/group
+
+COPY .docker/reference/pca_loadings/loadings.npz ${LOADINGS_NPZ}
+COPY .docker/reference/aims/gnomad_af_per_locus.tsv /opt/biovault/reference/aims/gnomad_af_per_locus.tsv
+COPY 03_individual_level/gnomad_projection_fast/scripts /opt/biovault/scripts/gnomad_projection_fast
+COPY 03_individual_level/pca_qc_fast/scripts /opt/biovault/scripts/pca_qc_fast
+COPY 03_individual_level/sex_biased_admixture/scripts /opt/biovault/scripts/sex_biased_admixture
+COPY 03_individual_level/sex_biased_admixture_fast/scripts /opt/biovault/scripts/sex_biased_admixture_fast
+COPY 04_population_level/fst_aims_fast/scripts /opt/biovault/scripts/population_level
+
+RUN chmod +x /opt/biovault/scripts/gnomad_projection_fast/*.sh
+
+WORKDIR /work
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["bash"]

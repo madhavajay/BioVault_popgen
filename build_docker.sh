@@ -5,6 +5,7 @@
 #   VERSION=0.1.1 ./build_docker.sh                   # tag biovault-popgen:0.1.1 + :latest
 #   IMAGE_NAME=ghcr.io/foo/biovault-popgen ./build_docker.sh
 #   PLATFORM=linux/arm64 ./build_docker.sh
+#   BUILD_FAST=0 ./build_docker.sh                    # skip :<version>-fast + :fast
 #   FORCE_REFERENCE_CACHE=1 ./build_docker.sh         # re-mirror loadings cache from GCS
 
 set -euo pipefail
@@ -14,7 +15,11 @@ VERSION="${VERSION:-0.1.1}"
 IMAGE_NAME="${IMAGE_NAME:-biovault-popgen}"
 IMAGE_VERSIONED="${IMAGE_NAME}:${VERSION}"
 IMAGE_LATEST="${IMAGE_NAME}:latest"
+FAST_VERSION="${FAST_VERSION:-${VERSION}-fast}"
+IMAGE_FAST_VERSIONED="${IMAGE_NAME}:${FAST_VERSION}"
+IMAGE_FAST_LATEST="${IMAGE_NAME}:fast"
 PLATFORM="${PLATFORM:-linux/amd64}"
+BUILD_FAST="${BUILD_FAST:-1}"
 TOOLS_IMAGE="${TOOLS_IMAGE:-${IMAGE_NAME}:tools}"
 LOADINGS_HT_SOURCE="${LOADINGS_HT_SOURCE:-gs://gcp-public-data--gnomad/release/3.1/pca/gnomad.v3.1.pca_loadings.ht}"
 CACHE_DIR="${ROOT_DIR}/.docker/reference/pca_loadings"
@@ -133,7 +138,21 @@ docker build \
   -t "${IMAGE_LATEST}" \
   "${ROOT_DIR}"
 
+if [ "${BUILD_FAST}" = "1" ]; then
+  docker build \
+    --platform "${PLATFORM}" \
+    --target fast-runtime \
+    -f "${ROOT_DIR}/Dockerfile" \
+    -t "${IMAGE_FAST_VERSIONED}" \
+    -t "${IMAGE_FAST_LATEST}" \
+    "${ROOT_DIR}"
+fi
+
 echo
 echo "Built:"
 echo "  ${IMAGE_VERSIONED}"
 echo "  ${IMAGE_LATEST}"
+if [ "${BUILD_FAST}" = "1" ]; then
+  echo "  ${IMAGE_FAST_VERSIONED}"
+  echo "  ${IMAGE_FAST_LATEST}"
+fi
