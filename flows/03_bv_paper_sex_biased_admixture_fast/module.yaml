@@ -1,0 +1,58 @@
+apiVersion: syftbox.openmined.org/v1alpha1
+kind: Module
+metadata:
+  name: 03_bv_paper_sex_biased_admixture_fast
+  version: 0.1.0
+  authors:
+    - madhava@openmined.org
+  description: |
+    Sex-biased admixture (X-hemizygosity) signal, driven by a `sex`
+    participant facet. Byte-identical fast sibling of the original
+    sex_biased_admixture module: the only change is a parallel genotype
+    loader; all downstream math (assign_sex, per-chromosome stats, seeded
+    NMF, results table, figure) is the original code, imported verbatim.
+
+    Per-participant autosomal vs X heterozygosity and NMF components are
+    compared between the declared sexes. The `sex` facet is materialized
+    into a sex_mapping.tsv (participant_id -> sex) exactly as the CLI does
+    via BIOVAULT_SEX_MAPPING — the analysis never infers sex from BAF.
+spec:
+  runner:
+    kind: nextflow
+    entrypoint: main.nf
+    template: dynamic-nextflow
+    image: biovault-popgen:0.1.1
+  inputs:
+    - name: participants
+      type: List[GenotypeRecord]
+      description: >
+        CSV/TSV with participant_id, genotype_file and a sex facet column.
+        genotype_file points to a DDNA GSAv3 TXT genotype file.
+      required_facets:
+        - sex
+      format:
+        kind: csv
+        mapping:
+          participant_id: participant_id
+          genotype_file: genotype_file
+  outputs:
+    - name: sex_bias_results
+      type: File
+      description: Per-participant autosomal/X heterozygosity + NMF components.
+      format:
+        kind: tsv
+      path: sex_bias_results.tsv
+    - name: sex_bias_plot
+      type: File
+      description: Figure 4 — sex-biased admixture (X-hemizygosity) scatter.
+      path: figure4_sex_biased_admixture.png
+    - name: sex_bias_plot_pdf
+      type: File
+      description: Figure 4 (PDF).
+      path: figure4_sex_biased_admixture.pdf
+    - name: pipeline_log
+      type: File
+      description: Pipeline log (sample counts, sex-facet labels loaded).
+      path: sex_biased_admixture.log
+  parameters: []
+  assets: []

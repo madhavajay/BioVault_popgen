@@ -1,0 +1,23 @@
+name: biovault_popgen
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.10
+  - pip
+  - curl
+  - plink
+  - plink2
+  - bcftools
+  - samtools
+  - htslib
+  - admixture
+  - openjdk=11
+  - pandas
+  - numpy
+  - scipy
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - pip:
+      - hail

@@ -1,0 +1,59 @@
+apiVersion: syftbox.openmined.org/v1alpha1
+kind: Module
+metadata:
+  name: 01_bv_paper_pca_qc_fast
+  version: 0.1.0
+  authors:
+    - madhava@openmined.org
+  description: |
+    Within-cohort QC + PCA sanity check on DDNA genotypes. No reference panel,
+    no projection — pure cohort-internal PCA over the SNPs that survive
+    GENO/MIND/MAF/HWE/LD filters. Use this to verify that uploaded genotype
+    data parses correctly and samples cluster sensibly before running the
+    reference-based gnomAD projection step.
+spec:
+  runner:
+    kind: nextflow
+    entrypoint: main.nf
+    template: dynamic-nextflow
+    image: biovault-popgen:0.1.1
+  inputs:
+    - name: participants
+      type: List[GenotypeRecord]
+      description: CSV/TSV with participant_id and genotype_file columns. genotype_file points to a DDNA GSAv3 TXT genotype file.
+      format:
+        kind: csv
+        mapping:
+          participant_id: participant_id
+          genotype_file: genotype_file
+  outputs:
+    - name: eigenvec
+      type: File
+      description: Cohort PCA eigenvectors (per-sample PC scores).
+      format:
+        kind: tsv
+      path: pca.eigenvec
+    - name: eigenval
+      type: File
+      description: Cohort PCA eigenvalues (variance explained per PC).
+      path: pca.eigenval
+    - name: snp_info
+      type: File
+      description: SNPs retained after QC, one per row.
+      format:
+        kind: tsv
+      path: snp_info.tsv
+    - name: pca_pc12_plot
+      type: File
+      description: PC1 vs PC2 scatter of the cohort.
+      path: pca_pc1_pc2.png
+    - name: pca_pc34_plot
+      type: File
+      description: PC3 vs PC4 scatter of the cohort.
+      path: pca_pc3_pc4.png
+    - name: pipeline_log
+      type: File
+      description: Pipeline log (per-step timings, counts dropped at each filter).
+      path: fast_pipeline.log
+  parameters: []
+  assets: []

@@ -16,6 +16,7 @@ Usage:
 """
 
 import sys
+import os
 from pathlib import Path
 
 import hail as hl
@@ -30,8 +31,25 @@ def main():
     out_tsv = Path(sys.argv[2])
     out_tsv.parent.mkdir(parents=True, exist_ok=True)
 
+    spark_conf = {
+        "spark.driver.memory": "4g",
+    }
+    gcs_jar = os.environ.get("GCS_CONNECTOR_JAR")
+    if gcs_jar:
+        spark_conf.update({
+            "spark.jars": gcs_jar,
+            "spark.driver.extraClassPath": gcs_jar,
+            "spark.executor.extraClassPath": gcs_jar,
+            "spark.hadoop.fs.gs.impl": "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem",
+            "spark.hadoop.fs.AbstractFileSystem.gs.impl": "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS",
+            "spark.hadoop.fs.gs.auth.type": "UNAUTHENTICATED",
+            "spark.hadoop.fs.gs.auth.service.account.enable": "false",
+            "spark.hadoop.fs.gs.auth.null.enable": "true",
+        })
+
     hl.init(default_reference="GRCh38", quiet=True,
-            log=str(out_tsv.parent / "hail_extract.log"))
+            log=str(out_tsv.parent / "hail_extract.log"),
+            spark_conf=spark_conf)
 
     print(f"Reading {ht_path}")
     ht = hl.read_table(ht_path)
@@ -48,9 +66,16 @@ def main():
 
     # Drop the original keys (locus, alleles) so export gives clean 5-col TSV.
     out_fields = ht.key_by().select("chrom", "pos", "ref", "alt", "id_chrpos")
+
+    # Collapse 3709 source partitions into a single Spark task. The HT is small
+    # (~30k rows total) but its partitioning is fine-grained, and per-task
+    # scheduling overhead dominates wall time when the JVM runs under
+    # Rosetta/qemu emulation (linux/amd64 image on an Apple Silicon host).
+    out_fields = out_fields.naive_coalesce(1)
     out_fields.export(str(out_tsv), header=False)
 
-    n = ht.count()
+    with open(out_tsv) as f:
+        n = sum(1 for _ in f)
     print(f"Wrote {n} loadings variants -> {out_tsv}")
 
 

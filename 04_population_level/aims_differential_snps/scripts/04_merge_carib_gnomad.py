@@ -27,8 +27,8 @@ import pandas as pd
 import numpy as np
 
 BASE = Path(__file__).resolve().parents[1]
-CARIB = BASE.parent / "fst_pipeline" / "data" / "merged" / "merged_allele_freq_annotated.tsv"
-GNOMAD = BASE / "data" / "gnomad_v4_af_per_locus.tsv"
+CARIB = BASE.parent / "fst_islands" / "data" / "merged" / "merged_allele_freq_annotated.tsv"
+GNOMAD = BASE / "results" / "gnomad_v4_af_per_locus.tsv"
 OUT    = BASE / "data" / "master_af_table.tsv"
 SUMM   = BASE / "data" / "master_af_table_summary.txt"
 

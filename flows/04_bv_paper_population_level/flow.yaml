@@ -1,0 +1,25 @@
+apiVersion: syftbox.openmined.org/v1alpha1
+kind: Flow
+metadata:
+  name: 04_bv_paper_population_level
+  version: 0.1.0
+spec:
+  inputs:
+    samplesheet:
+      type: List[GenotypeRecord]
+      description: Genotype samplesheet with participant country facet columns.
+      required_facets:
+        - country
+  steps:
+    - id: population_level
+      uses: ./
+      with:
+        participants: inputs.samplesheet
+      publish:
+        country_map: File(country_map.tsv)
+        fst_matrix: File(fst_matrix.tsv)
+        merged_allele_freq: File(merged_allele_freq_annotated.tsv)
+        master_af_table: File(master_af_table.tsv)
+        differential_snps: File(all_outliers_long.tsv)
+        aims_combined: File(aims_combined.tsv)
+        summary: File(population_level_summary.txt)

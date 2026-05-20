@@ -220,7 +220,8 @@ def main():
                            sep="\t", index=False)
 
     # Diagonal is zero by definition
-    np.fill_diagonal(fst_matrix.values, 0.0)
+    for p in populations:
+        fst_matrix.loc[p, p] = 0.0
 
     # ── Save matrix ───────────────────────────────────────────────────────
     out_path = FST_DIR / "fst_matrix.tsv"

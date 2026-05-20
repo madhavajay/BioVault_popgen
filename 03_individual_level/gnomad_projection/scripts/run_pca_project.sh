@@ -9,10 +9,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPTS_DIR="${SCRIPT_DIR}/scripts"
-WORKING="${SCRIPT_DIR}/working"
-RESULTS="${SCRIPT_DIR}/results"
-CONDA_ENV="ancestry_pipeline"
+PIPELINE_DIR="${PIPELINE_DIR:-$(dirname "$SCRIPT_DIR")}"
+SCRIPTS_DIR="${SCRIPT_DIR}"
+WORKING="${PIPELINE_DIR}/working"
+RESULTS="${PIPELINE_DIR}/results"
+CONDA_ENV="${CONDA_ENV:-ancestry_pipeline}"
 
 OUT_DIR="${RESULTS}/pca_projection"
 mkdir -p "${OUT_DIR}"
@@ -53,7 +54,7 @@ log "Output dir:  ${OUT_DIR}"
 python "${SCRIPTS_DIR}/pca_project.py" "${STUDY_PREFIX}" "${OUT_DIR}"
 
 # --- Overlay study on gnomAD reference PCs -----------------------------------
-META_TSV="${SCRIPT_DIR}/reference/hgdp_tgp_sample_meta.tsv"
+META_TSV="${PIPELINE_DIR}/reference/hgdp_tgp_sample_meta.tsv"
 if [ -f "${META_TSV}" ]; then
     log "Building reference-overlay plot..."
     python "${SCRIPTS_DIR}/pca_overlay_plot.py" \

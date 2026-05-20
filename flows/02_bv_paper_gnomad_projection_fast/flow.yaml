@@ -1,0 +1,18 @@
+apiVersion: syftbox.openmined.org/v1alpha1
+kind: Flow
+metadata:
+  name: 02_bv_paper_gnomad_projection_fast
+  version: 0.1.0
+spec:
+  inputs:
+    samplesheet:
+      type: List[GenotypeRecord]
+  steps:
+    - id: gnomad_projection_fast
+      uses: ./
+      with:
+        participants: inputs.samplesheet
+      publish:
+        projection_tsv: File(study_pca_projection.tsv)
+        qc_report: File(qc_report.txt)
+        projection_plot: File(pca_projection.png)

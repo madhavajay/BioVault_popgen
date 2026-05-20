@@ -20,6 +20,7 @@ Usage:
 """
 
 import sys
+import os
 from pathlib import Path
 
 import hail as hl
@@ -30,12 +31,28 @@ import hail as hl
 # the gnomAD v3.1 ancestry inference workflow. Verify with:
 #   gsutil ls gs://gcp-public-data--gnomad/release/3.1/pca/
 #
-# If this exact path 404s, also try:
+# Schema (confirmed via hl.read_table().describe()):
+#   struct{locus: locus<GRCh38>, alleles: array<str>,
+#          loadings: array<float64>, pca_af: float64}   n=76,399 variants
+# This is exactly what hl.experimental.pc_project(call, loadings, af) needs.
+#
+# Kathy's original pca_project.py referenced this path:
 #   gs://gcp-public-data--gnomad/release/3.1.2/pca/gnomad.v3.1.2.hgdp_1kg_subset_pop_pca_loadings.ht
+# That object does NOT exist on GCS (verified 2026-05-15): release/3.1.2/ has
+# only ht/ mt/ vcf/ — no pca/ dir. release/3.1/pca/ is the ONLY pca/ dir in
+# the entire release/3.* series (no minor-version bump). The unbranded
+# gnomad.v3.1.pca_loadings.ht IS the HGDP+1kGP-trained loadings table — the
+# "hgdp_1kg" name only appears on the per-sample PCA *result* artifacts under
+# gs://gcp-public-data--gnomad/release/3.1/secondary_analyses/hgdp_1kg_v2/
+# (those have no loadings/weights, so they can't be used for projection).
 LOADINGS_PATHS = [
+    os.environ.get("LOADINGS_HT"),
+    "/work/03_individual_level/gnomad_projection/reference/pca_loadings/gnomad.v3.1.pca_loadings.ht",
+    "/opt/biovault/reference/pca_loadings/gnomad.v3.1.pca_loadings.ht",
     "/Users/spectremac/Desktop/kathyproject/pipeline_gnomad/reference/pca_loadings/gnomad.v3.1.pca_loadings.ht",
-    "gs://gcp-public-data--gnomad/release/3.1.2/pca/gnomad.v3.1.2.hgdp_1kg_subset_pop_pca_loadings.ht",
+    "gs://gcp-public-data--gnomad/release/3.1/pca/gnomad.v3.1.pca_loadings.ht",
 ]
+LOADINGS_PATHS = [path for path in LOADINGS_PATHS if path]
 
 
 def main():
@@ -48,14 +65,28 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Hail with local Spark (no cluster needed for ~10 samples) ----------
+    spark_conf = {
+        "spark.driver.memory": "8g",
+        "spark.executor.memory": "8g",
+    }
+    gcs_jar = os.environ.get("GCS_CONNECTOR_JAR")
+    if gcs_jar:
+        spark_conf.update({
+            "spark.jars": gcs_jar,
+            "spark.driver.extraClassPath": gcs_jar,
+            "spark.executor.extraClassPath": gcs_jar,
+            "spark.hadoop.fs.gs.impl": "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem",
+            "spark.hadoop.fs.AbstractFileSystem.gs.impl": "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS",
+            "spark.hadoop.fs.gs.auth.type": "UNAUTHENTICATED",
+            "spark.hadoop.fs.gs.auth.service.account.enable": "false",
+            "spark.hadoop.fs.gs.auth.null.enable": "true",
+        })
+
     hl.init(
         default_reference="GRCh38",
         log=str(output_dir / "hail.log"),
         quiet=True,
-        spark_conf={
-            "spark.driver.memory": "8g",
-            "spark.executor.memory": "8g",
-        },
+        spark_conf=spark_conf,
     )
 
     # --- Study data ---------------------------------------------------------

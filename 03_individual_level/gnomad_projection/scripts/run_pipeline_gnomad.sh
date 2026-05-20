@@ -34,16 +34,16 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-DATA_DIR="${PROJECT_DIR}"
-PIPELINE_DIR="${SCRIPT_DIR}"
-SCRIPTS_DIR="${PIPELINE_DIR}/scripts"
+PIPELINE_DIR="${PIPELINE_DIR:-$(dirname "$SCRIPT_DIR")}"
+PROJECT_DIR="${PROJECT_DIR:-${PIPELINE_DIR}}"
+DATA_DIR="${DATA_DIR:-$(dirname "$PIPELINE_DIR")}"
+SCRIPTS_DIR="${SCRIPT_DIR}"
 WORKING="${PIPELINE_DIR}/working"
 RESULTS="${PIPELINE_DIR}/results"
 REFDIR="${PIPELINE_DIR}/reference"
 TOOLS_DIR="${PIPELINE_DIR}/tools"
-CONDA_ENV="ancestry_pipeline"
-THREADS=$(sysctl -n hw.ncpu || nproc || echo 4)
+CONDA_ENV="${CONDA_ENV:-ancestry_pipeline}"
+THREADS="${THREADS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 
 # --- QC thresholds (same as 1KG pipeline) ---
 GENO=0.05
@@ -117,13 +117,13 @@ step0_setup() {
     else
         log "Creating conda env: ${CONDA_ENV}"
         conda create -n "${CONDA_ENV}" -c bioconda -c conda-forge \
-            python=3.10 plink2 bcftools samtools htslib \
+            python=3.10 plink plink2 bcftools samtools htslib \
             matplotlib pandas numpy scipy admixture \
             -y
     fi
     conda activate "${CONDA_ENV}"
 
-    for tool in plink2 bcftools samtools python3 curl; do
+    for tool in plink plink2 bcftools samtools python3 curl; do
         command -v "$tool" >/dev/null 2>&1 || die "$tool not found"
     done
 
@@ -244,6 +244,7 @@ step2_qc() {
 #
 # Step 5 still re-prunes on the joint (study∩ref) merge as a safety net.
 LOADINGS_HT="${LOADINGS_HT:-${REFDIR}/pca_loadings/gnomad.v3.1.pca_loadings.ht}"
+LOADINGS_VARIANTS_TSV="${LOADINGS_VARIANTS_TSV:-}"
 
 step2b_ld_prune_study() {
     if step_done "step2b"; then
@@ -255,7 +256,10 @@ step2b_ld_prune_study() {
 
     LOADINGS_TSV="${WORKING}/loadings_variants.tsv"
     if [ ! -s "${LOADINGS_TSV}" ]; then
-        if [ ! -d "${LOADINGS_HT}" ]; then
+        if [ -n "${LOADINGS_VARIANTS_TSV}" ] && [ -s "${LOADINGS_VARIANTS_TSV}" ]; then
+            log "Using cached loadings variants: ${LOADINGS_VARIANTS_TSV}"
+            cp "${LOADINGS_VARIANTS_TSV}" "${LOADINGS_TSV}"
+        elif [ ! -d "${LOADINGS_HT}" ]; then
             warn "Loadings HT not found: ${LOADINGS_HT}"
             warn "Falling back to un-pruned study_qc.bim for download set."
             warn "(This will be slow. Run Path A first or set LOADINGS_HT.)"
@@ -264,10 +268,11 @@ step2b_ld_prune_study() {
             done
             mark_done "step2b"
             return
+        else
+            log "Extracting variant list from ${LOADINGS_HT}"
+            python "${SCRIPTS_DIR}/extract_loadings_variants.py" \
+                   "${LOADINGS_HT}" "${LOADINGS_TSV}"
         fi
-        log "Extracting variant list from ${LOADINGS_HT}"
-        python "${SCRIPTS_DIR}/extract_loadings_variants.py" \
-               "${LOADINGS_HT}" "${LOADINGS_TSV}"
     fi
     log "Loadings variants available: $(wc -l < "${LOADINGS_TSV}")"
 
