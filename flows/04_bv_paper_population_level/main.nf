@@ -64,7 +64,7 @@ workflow USER {
         def result = population_fst_aims(split.af_dir, split.populations)
 
     emit:
-        country_map        = result.country_map
+        allele_freqs       = result.allele_freqs
         fst_matrix         = result.fst_matrix
         merged_allele_freq = result.merged_allele_freq
         master_af_table    = result.master_af_table
@@ -158,7 +158,7 @@ process population_fst_aims {
         val  populations
 
     output:
-        path "country_map.tsv",                    emit: country_map
+        path "allele_freq_*.tsv",                  emit: allele_freqs
         path "fst_matrix.tsv",                     emit: fst_matrix
         path "merged_allele_freq_annotated.tsv",   emit: merged_allele_freq
         path "master_af_table.tsv",                emit: master_af_table
@@ -186,5 +186,10 @@ process population_fst_aims {
         "\${PWD}/work" \\
         "\${PWD}" \\
         "${populations}"
+
+    for f in "\${PWD}/${af_dir}"/allele_freq_*.tsv; do
+        [ -f "\${f}" ] || { echo "ERROR: no aggregate allele_freq_*.tsv files found in ${af_dir}" >&2; exit 1; }
+        cp "\${f}" .
+    done
     """
 }

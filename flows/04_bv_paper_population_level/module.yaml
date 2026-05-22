@@ -39,12 +39,13 @@ spec:
           participant_id: participant_id
           genotype_file: genotype_file
   outputs:
-    - name: country_map
+    - name: allele_freqs
       type: File
-      description: participant_id -> normalized country label.
+      description: Per-country aggregate allele-frequency TSVs, named allele_freq_<country>.tsv.
       format:
         kind: tsv
-      path: country_map.tsv
+      glob: allele_freq_*.tsv
+      cardinality: many
     - name: fst_matrix
       type: File
       description: Pairwise WC84 FST matrix (population x population).

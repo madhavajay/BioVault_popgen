@@ -16,7 +16,7 @@ spec:
       with:
         participants: inputs.samplesheet
       publish:
-        country_map: File(country_map.tsv)
+        allele_freqs: File(allele_freq_*.tsv)
         fst_matrix: File(fst_matrix.tsv)
         merged_allele_freq: File(merged_allele_freq_annotated.tsv)
         master_af_table: File(master_af_table.tsv)
