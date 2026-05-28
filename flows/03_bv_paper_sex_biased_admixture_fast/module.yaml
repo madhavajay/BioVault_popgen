@@ -21,7 +21,7 @@ spec:
     kind: nextflow
     entrypoint: main.nf
     template: dynamic-nextflow
-    image: biovault-popgen:0.1.1-fast
+    image: ghcr.io/madhavajay/biovault-popgen:0.1.2-fast
   inputs:
     - name: participants
       type: List[GenotypeRecord]
@@ -42,6 +42,18 @@ spec:
       format:
         kind: tsv
       path: sex_bias_results.tsv
+    - name: nmf_variant_filter_autosomes
+      type: File
+      description: Autosomal rsIDs excluded from NMF with call counts and filter reason.
+      format:
+        kind: tsv
+      path: nmf_variant_filter_autosomes.tsv
+    - name: nmf_variant_filter_x
+      type: File
+      description: X chromosome rsIDs excluded from NMF with call counts and filter reason.
+      format:
+        kind: tsv
+      path: nmf_variant_filter_x.tsv
     - name: sex_bias_plot
       type: File
       description: Figure 4 — sex-biased admixture (X-hemizygosity) scatter.

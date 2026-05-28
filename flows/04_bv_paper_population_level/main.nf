@@ -3,11 +3,11 @@
 // Two containers, orchestrated by Nextflow (the desktop runner pre-pulls every
 // per-process `container '...'`):
 //
-//   split_allele_freq  (ghcr.io/openmined/biosynth:0.1.23)
+//   split_allele_freq  (BIOSYNTH_IMAGE, default ghcr.io/openmined/biosynth:0.1.24)
 //       per-participant `bvs emit-long`, then per-country `bvs aggregate-long`
 //       -> allele_freq_<country_norm>.tsv
 //
-//   population_fst_aims  (biovault-popgen:0.1.1-fast)
+//   population_fst_aims  (ghcr.io/madhavajay/biovault-popgen:0.1.2-fast)
 //       FST (load/merge -> WC84 -> visualise) then AIMs (merge w/ bundled
 //       gnomAD ref -> differential SNPs -> AIMs panels)
 //
@@ -22,6 +22,8 @@
 // non-alphanumeric runs to "_" -> strip leading/trailing "_".
 
 nextflow.enable.dsl=2
+
+def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.24'
 
 def normalizeCountry(String raw) {
     return (raw ?: '')
@@ -74,14 +76,14 @@ workflow USER {
 }
 
 process split_allele_freq {
-    container 'ghcr.io/openmined/biosynth:0.1.23'
+    container BIOSYNTH_IMAGE
     // The biosynth image sets ENTRYPOINT ["bvs"], so Nextflow's
     // `<image> /bin/bash .command.run` becomes `bvs /bin/bash …` and bvs
     // rejects it ("unrecognized subcommand '/bin/bash'"). Clear the
     // entrypoint so Nextflow's own bash wrapper runs (mirrors the CLI's
     // `docker run --entrypoint "" … bvs …` in 04_run_allele_freq.sh).
     containerOptions '--entrypoint=""'
-    stageInMode 'copy'
+    stageInMode 'symlink'
     errorStrategy { params.nextflow.error_strategy }
     maxRetries { params.nextflow.max_retries }
 
@@ -99,7 +101,7 @@ process split_allele_freq {
         def orig = genotype_files[idx].getName()
         def staged = "${pid}__${orig}"
         mapping << "${pid}\t${countries[idx]}\t${staged}"
-        staging << "mv '${orig}' 'geno/${staged}'"
+        staging << "ln -s \"../${orig}\" \"geno/${staged}\""
     }
     def mappingText = mapping.join('\\n')
     """
@@ -147,9 +149,9 @@ process split_allele_freq {
 }
 
 process population_fst_aims {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.1-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.2-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
-    stageInMode 'copy'
+    stageInMode 'symlink'
     errorStrategy { params.nextflow.error_strategy }
     maxRetries { params.nextflow.max_retries }
 

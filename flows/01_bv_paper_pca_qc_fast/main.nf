@@ -52,9 +52,9 @@ workflow USER {
 }
 
 process pca_qc_fast {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.1-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.2-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
-    stageInMode 'copy'
+    stageInMode 'symlink'
     errorStrategy { params.nextflow.error_strategy }
     maxRetries { params.nextflow.max_retries }
 
@@ -73,7 +73,7 @@ process pca_qc_fast {
     def staging = []
     participant_ids.eachWithIndex { pid, idx ->
         def fname = genotype_files[idx].getName()
-        staging << "mkdir -p input/${pid} && mv '${fname}' 'input/${pid}/'"
+        staging << "mkdir -p input/${pid} && ln -s \"../../${fname}\" \"input/${pid}/${fname}\""
     }
     """
     set -euo pipefail
@@ -93,7 +93,8 @@ process pca_qc_fast {
     ${staging.join('\n    ')}
 
     # The image bakes the script *contents* flat into
-    # /opt/biovault/scripts/pca_qc_fast/ (fast_pipeline.py, genoio.py, ...).
+    # /opt/biovault/scripts/pca_qc_fast/ and shared tools into
+    # /opt/biovault/tools.
     # fast_pipeline.py uses BASE_DIR = Path(__file__).parents[1], so it must
     # live at <base>/scripts/fast_pipeline.py for outputs to land in
     # <base>/{data,plots,logs}. Reconstruct that layout in the writable workdir.

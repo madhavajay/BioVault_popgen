@@ -111,7 +111,7 @@ def main():
                          "cohort_spec.tsv, preserving IDs + island/sex/format")
     ap.add_argument("--bvs-image", default=None,
                     help="run bvs via this docker image instead of host bvs "
-                         "(e.g. ghcr.io/openmined/biosynth:0.1.23); the "
+                         "(e.g. ghcr.io/openmined/biosynth:0.1.24); the "
                          "out-dir is bind-mounted at the same absolute path")
     ap.add_argument("--biallelic", action="store_true",
                     help="pass --biallelic to bvs synthetic so every rsID is "
@@ -149,6 +149,16 @@ def main():
             return None
         return files[0].name
 
+    def generated_genotype_path(pid: str, expected: Path) -> Path:
+        if expected.is_file():
+            return expected
+        files = sorted((out / pid).glob("*.txt"))
+        if len(files) == 1:
+            return files[0]
+        raise FileNotFoundError(
+            f"could not resolve generated genotype for {pid}; expected {expected}"
+        )
+
     # --- regenerate-from-spec: keep exact IDs + per-participant assignment ---
     if args.from_spec:
         rows = []
@@ -181,7 +191,11 @@ def main():
                 "--variants-file", str(ovf.resolve()),
             ]))
             r = subprocess.run(cmd, capture_output=True, text=True)
-            if r.returncode != 0 or not out_path.is_file():
+            try:
+                generated_path = generated_genotype_path(pid, out_path)
+            except FileNotFoundError:
+                generated_path = out_path
+            if r.returncode != 0 or not generated_path.is_file():
                 sys.exit(f"bvs failed for {pid} ({isl}/{sx}/{fmt}):\n"
                          f"{r.stderr}\n{r.stdout}")
             if (i + 1) % 10 == 0 or i + 1 == len(rows):

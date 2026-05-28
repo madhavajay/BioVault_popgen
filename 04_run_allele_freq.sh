@@ -24,13 +24,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${ROOT_DIR}/scripts/image_versions.sh"
 MAPPING="${MAPPING:-${ROOT_DIR}/01_mock_data_generation/output/island_mapping.tsv}"
 DATA_DIR="${DATA_DIR:-${ROOT_DIR}/01_mock_data_generation/output}"
 OUT_DIR="${OUT_DIR:-${ROOT_DIR}/04_population_level/raw_allele_freq_country}"
 BVLR_DIR="${BVLR_DIR:-${ROOT_DIR}/04_population_level/.bvlr_cache}"
 # Pinned biosynth version. Do NOT use :latest — older tags (<=0.1.19)
 # silently emit empty .bvlr for Illumina GSGT input. 0.1.22+ handles both.
-IMAGE="${IMAGE:-ghcr.io/openmined/biosynth:0.1.23}"
+IMAGE="${IMAGE:-${BIOSYNTH_IMAGE}}"
 PARALLEL="${PARALLEL:-8}"
 
 # bvs runner. The pinned docker biosynth image lags host bvs and older

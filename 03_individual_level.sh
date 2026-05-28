@@ -19,14 +19,15 @@
 #
 # Overrides:
 #   SAMPLES_SRC=/path/to/dir
-#   IMAGE=biovault-popgen:0.1.1
+#   IMAGE=ghcr.io/madhavajay/biovault-popgen:0.1.2
 #   RESULTS_ROOT=/path/to/results
 
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${ROOT_DIR}/scripts/image_versions.sh"
 SAMPLES_SRC="${SAMPLES_SRC:-${ROOT_DIR}/01_mock_data_generation/output}"
-IMAGE="${IMAGE:-biovault-popgen:0.1.1}"
+IMAGE="${IMAGE:-${BIOVAULT_IMAGE}}"
 SUBSET_DIR="${ROOT_DIR}/03_individual_level/.samples"
 RESULTS_ROOT="${RESULTS_ROOT:-${ROOT_DIR}/results}"
 
@@ -101,7 +102,6 @@ qc_slow)
     mkdir -p "${WORK_BASE}/scripts" "${WORK_BASE}/data" "${WORK_BASE}/plots" "${WORK_BASE}/logs"
     cp "${PIPELINE_DIR}/scripts/"*.py "${WORK_BASE}/scripts/"
     cp "${PIPELINE_DIR}/scripts/"*.sh "${WORK_BASE}/scripts/"
-    cp "${FAST_DIR}/scripts/genoio.py" "${WORK_BASE}/scripts/"
     echo "Running pca_qc (original Python QC + PCA) in ${IMAGE} ..."
     docker run --rm \
         --platform linux/amd64 \
@@ -251,6 +251,7 @@ sex)
         '
     mkdir -p "${TASK_DIR}"
     cp "${WORK_FAST}/results/sex_bias_results.tsv" "${TASK_DIR}/" 2>/dev/null || true
+    cp "${WORK_FAST}/results"/nmf_variant_filter_*.tsv "${TASK_DIR}/" 2>/dev/null || true
     cp "${WORK_FAST}/plots/figure4_sex_biased_admixture.png" "${TASK_DIR}/" 2>/dev/null || true
     cp "${WORK_FAST}/plots/figure4_sex_biased_admixture.pdf" "${TASK_DIR}/" 2>/dev/null || true
     cp "${WORK_FAST}/logs/sex_biased_admixture.log" "${TASK_DIR}/" 2>/dev/null || \
@@ -259,6 +260,8 @@ sex)
     echo "=== sex_biased_admixture_fast outputs (N=${N}) -> ${TASK_DIR} ==="
     for f in \
         "${TASK_DIR}/sex_bias_results.tsv" \
+        "${TASK_DIR}/nmf_variant_filter_autosomes.tsv" \
+        "${TASK_DIR}/nmf_variant_filter_x.tsv" \
         "${TASK_DIR}/figure4_sex_biased_admixture.png" \
         "${TASK_DIR}/figure4_sex_biased_admixture.pdf" \
         "${TASK_DIR}/sex_biased_admixture.log"; do
@@ -302,6 +305,7 @@ sex_slow)
         '
     mkdir -p "${TASK_DIR}"
     cp "${WORK_BASE}/results/sex_bias_results.tsv" "${TASK_DIR}/" 2>/dev/null || true
+    cp "${WORK_BASE}/results"/nmf_variant_filter_*.tsv "${TASK_DIR}/" 2>/dev/null || true
     cp "${WORK_BASE}/plots/figure4_sex_biased_admixture.png" "${TASK_DIR}/" 2>/dev/null || true
     cp "${WORK_BASE}/plots/figure4_sex_biased_admixture.pdf" "${TASK_DIR}/" 2>/dev/null || true
     cp "${WORK_BASE}/logs/sex_biased_admixture.log" "${TASK_DIR}/" 2>/dev/null || true
@@ -309,6 +313,8 @@ sex_slow)
     echo "=== sex_biased_admixture outputs (N=${N}) -> ${TASK_DIR} ==="
     for f in \
         "${TASK_DIR}/sex_bias_results.tsv" \
+        "${TASK_DIR}/nmf_variant_filter_autosomes.tsv" \
+        "${TASK_DIR}/nmf_variant_filter_x.tsv" \
         "${TASK_DIR}/figure4_sex_biased_admixture.png" \
         "${TASK_DIR}/figure4_sex_biased_admixture.pdf" \
         "${TASK_DIR}/sex_biased_admixture.log"; do

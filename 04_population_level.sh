@@ -18,7 +18,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE="${IMAGE:-biovault-popgen:0.1.1}"
+source "${ROOT_DIR}/scripts/image_versions.sh"
+IMAGE="${IMAGE:-${BIOVAULT_IMAGE}}"
 RESULTS_ROOT="${RESULTS_ROOT:-${ROOT_DIR}/results}"
 SLOW=0
 CLEAN=0

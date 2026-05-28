@@ -9,7 +9,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE="${IMAGE:-biovault-popgen:latest}"
+source "${ROOT_DIR}/scripts/image_versions.sh"
+IMAGE="${IMAGE:-${BIOVAULT_IMAGE}}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 
 docker build \

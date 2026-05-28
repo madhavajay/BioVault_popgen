@@ -36,7 +36,6 @@ from pathlib import Path
 ORIG_SCRIPTS = (Path(__file__).resolve().parents[2]
                 / "sex_biased_admixture" / "scripts")
 sys.path.insert(0, str(ORIG_SCRIPTS))
-sys.path.insert(0, str(Path(__file__).resolve().parent))  # local genoio fork
 
 import sex_biased_admixture as sba  # noqa: E402  reuse ALL analysis math
 

@@ -9,10 +9,10 @@ cohort. Each step runs as a self-contained Nextflow flow.
 Production flows use the slim fast image:
 
 ```
-biovault-popgen:0.1.1-fast
+ghcr.io/madhavajay/biovault-popgen:0.1.2-fast
 ```
 
-The full image is still built as `biovault-popgen:0.1.1` for slow/Hail
+The full image is still built as `ghcr.io/madhavajay/biovault-popgen:0.1.2` for slow/Hail
 reference paths and debugging. Tags are mutable: a later CI build with
 the same `VERSION` will overwrite `0.1.1` and `0.1.1-fast`. Use
 `sha-<short>` / `sha-<short>-fast` tags when a frozen production image is
@@ -184,14 +184,14 @@ flow.
 **Internal stages** (two containers, orchestrated by Nextflow — the
 desktop runner pre-pulls every per-process `container` it finds):
 
-1. **Split by country** — `container ghcr.io/openmined/biosynth:0.1.23`.
+1. **Split by country** — `container ghcr.io/openmined/biosynth:0.1.24`.
    Per-participant `bvs emit-long`, then per-country
    `bvs aggregate-long` → `allele_freq_<country>.tsv`. The country label
    is the facet value normalized: trim → lowercase → non-alphanumeric
    runs → `_` → strip `_` (e.g. `"Trinidad and Tobago"` →
    `allele_freq_trinidad_and_tobago.tsv`). The Groovy normalizer in
    `main.nf` and `scripts/popset.py` are kept identical.
-2. **FST** — `container biovault-popgen:0.1.1-fast`. Load/merge
+2. **FST** — `container ghcr.io/madhavajay/biovault-popgen:0.1.2-fast`. Load/merge
    per-country AF → pairwise Weir & Cockerham 1984 matrix → heatmap /
    dendrogram / population PCA.
 3. **AIMs** — same container. Merge against the bundled gnomAD HGDP+TGP
@@ -258,7 +258,7 @@ The repo now builds two runtime images from the same Dockerfile:
 
 ### Fast production image
 
-`biovault-popgen:0.1.1-fast` bakes:
+`ghcr.io/madhavajay/biovault-popgen:0.1.2-fast` bakes:
 
 - A smaller `biovault_popgen` conda env: Python, PLINK 2, pandas, numpy,
   scipy, scikit-learn, matplotlib-base, seaborn.
@@ -276,7 +276,7 @@ is the image referenced by the BioVault flow files.
 
 ### Full debug/reference image
 
-`biovault-popgen:0.1.1` bakes:
+`ghcr.io/madhavajay/biovault-popgen:0.1.2` bakes:
 
 - Full `biovault_popgen` conda env (PLINK/PLINK 2, bcftools, samtools,
   htslib, Hail/Spark, pandas, numpy, sklearn, plotting packages).
@@ -294,22 +294,22 @@ is the image referenced by the BioVault flow files.
 Build both images locally:
 
 ```bash
-VERSION=0.1.1 ./build_docker.sh
+VERSION=0.1.2 ./build_docker.sh
 ```
 
 This builds the full image first, then the fast image. It produces:
 
 ```text
-biovault-popgen:0.1.1
+ghcr.io/madhavajay/biovault-popgen:0.1.2
 biovault-popgen:latest
-biovault-popgen:0.1.1-fast
+ghcr.io/madhavajay/biovault-popgen:0.1.2-fast
 biovault-popgen:fast
 ```
 
 Build only the full image and skip the fast image:
 
 ```bash
-VERSION=0.1.1 BUILD_FAST=0 ./build_docker.sh
+VERSION=0.1.2 BUILD_FAST=0 ./build_docker.sh
 ```
 
 Build only the fast target directly, assuming the local reference cache
@@ -318,7 +318,7 @@ already exists:
 ```bash
 docker build --platform linux/amd64 \
   --target fast-runtime \
-  -t biovault-popgen:0.1.1-fast \
+  -t ghcr.io/madhavajay/biovault-popgen:0.1.2-fast \
   -t biovault-popgen:fast \
   .
 ```
@@ -337,8 +337,8 @@ prime the reference cache.
 CI publishes the mutable version tags plus SHA tags:
 
 ```text
-ghcr.io/madhavajay/biovault-popgen:0.1.1
-ghcr.io/madhavajay/biovault-popgen:0.1.1-fast
+ghcr.io/madhavajay/biovault-popgen:0.1.2
+ghcr.io/madhavajay/biovault-popgen:0.1.2-fast
 ghcr.io/madhavajay/biovault-popgen:latest
 ghcr.io/madhavajay/biovault-popgen:fast
 ghcr.io/madhavajay/biovault-popgen:sha-<short>
@@ -356,11 +356,11 @@ small participant count first so failures are quick.
 Fast production image:
 
 ```bash
-docker tag biovault-popgen:fast biovault-popgen:0.1.1-fast
-IMAGE=biovault-popgen:0.1.1-fast ./03_individual_level.sh --qc 3
-IMAGE=biovault-popgen:0.1.1-fast ./03_individual_level.sh --fast 3
-IMAGE=biovault-popgen:0.1.1-fast ./03_individual_level.sh --sex 4
-IMAGE=biovault-popgen:0.1.1-fast ./04_population_level.sh --limit 1
+docker tag biovault-popgen:fast ghcr.io/madhavajay/biovault-popgen:0.1.2-fast
+IMAGE=ghcr.io/madhavajay/biovault-popgen:0.1.2-fast ./03_individual_level.sh --qc 3
+IMAGE=ghcr.io/madhavajay/biovault-popgen:0.1.2-fast ./03_individual_level.sh --fast 3
+IMAGE=ghcr.io/madhavajay/biovault-popgen:0.1.2-fast ./03_individual_level.sh --sex 4
+IMAGE=ghcr.io/madhavajay/biovault-popgen:0.1.2-fast ./04_population_level.sh --limit 1
 ```
 
 Expected output roots:
@@ -377,10 +377,10 @@ Expected output roots:
 Slow/reference paths using the full image:
 
 ```bash
-IMAGE=biovault-popgen:0.1.1 ./03_individual_level.sh --slow 3
-IMAGE=biovault-popgen:0.1.1 ./03_individual_level.sh --qc --slow 3
-IMAGE=biovault-popgen:0.1.1 ./03_individual_level.sh --sex --slow 4
-IMAGE=biovault-popgen:0.1.1 ./04_population_level.sh --slow --limit 1
+IMAGE=ghcr.io/madhavajay/biovault-popgen:0.1.2 ./03_individual_level.sh --slow 3
+IMAGE=ghcr.io/madhavajay/biovault-popgen:0.1.2 ./03_individual_level.sh --qc --slow 3
+IMAGE=ghcr.io/madhavajay/biovault-popgen:0.1.2 ./03_individual_level.sh --sex --slow 4
+IMAGE=ghcr.io/madhavajay/biovault-popgen:0.1.2 ./04_population_level.sh --slow --limit 1
 ```
 
 Expected slow output roots:
@@ -398,10 +398,10 @@ Expected slow output roots:
 
 | Flow                                       | Step | Image |
 |--------------------------------------------|------|-------|
-| `01_bv_paper_pca_qc_fast`                  | 1    | `biovault-popgen:0.1.1-fast` |
-| `02_bv_paper_gnomad_projection_fast`       | 2    | `biovault-popgen:0.1.1-fast` |
-| `03_bv_paper_sex_biased_admixture_fast`    | 3    | `biovault-popgen:0.1.1-fast` |
-| `04_bv_paper_population_level`             | 4    | `ghcr.io/openmined/biosynth:0.1.23` + `biovault-popgen:0.1.1-fast` |
+| `01_bv_paper_pca_qc_fast`                  | 1    | `ghcr.io/madhavajay/biovault-popgen:0.1.2-fast` |
+| `02_bv_paper_gnomad_projection_fast`       | 2    | `ghcr.io/madhavajay/biovault-popgen:0.1.2-fast` |
+| `03_bv_paper_sex_biased_admixture_fast`    | 3    | `ghcr.io/madhavajay/biovault-popgen:0.1.2-fast` |
+| `04_bv_paper_population_level`             | 4    | `ghcr.io/openmined/biosynth:0.1.24` + `ghcr.io/madhavajay/biovault-popgen:0.1.2-fast` |
 
 Each flow lives at `flows/<name>/` with `flow.yaml`, `module.yaml`, and
 `main.nf`. Inputs are a `List[GenotypeRecord]` samplesheet; outputs are

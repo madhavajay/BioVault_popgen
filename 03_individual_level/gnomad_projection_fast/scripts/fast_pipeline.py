@@ -59,10 +59,14 @@ def compute_dosage(txt_path, key_to_idx, ref_arr, alt_arr, n_var, min_gs):
         txt_path, sep="\t", header=None, comment="#",
         names=["rsid", "chrom", "pos", "gt", "gs", "baf", "lrr"],
         usecols=["chrom", "pos", "gt", "gs"],
-        dtype={"chrom": str, "pos": np.int64, "gt": str, "gs": float},
-        engine="c",
+        dtype={"chrom": str, "pos": str, "gt": str, "gs": str},
+        engine="c", na_filter=False,
     )
     df = df[df["rsid"] != "rsid"] if "rsid" in df.columns else df
+    df["pos"] = pd.to_numeric(df["pos"], errors="coerce")
+    df["gs"] = pd.to_numeric(df["gs"], errors="coerce")
+    df = df[df["pos"].notna() & df["gs"].notna()]
+    df["pos"] = df["pos"].astype(np.int64)
     df = df[df["chrom"].isin(AUTOSOMES)]
     df = df[df["gs"] >= min_gs]
     df = df[df["gt"].str.len() == 2]
@@ -129,7 +133,7 @@ def main():
 
     sample_dirs = sorted(
         d for d in args.data_dir.iterdir()
-        if d.is_dir() and d.name.isdigit()
+        if d.is_dir()
     )
     log.info(f"Samples: {len(sample_dirs)}")
 

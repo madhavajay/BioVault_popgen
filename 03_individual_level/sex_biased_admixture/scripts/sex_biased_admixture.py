@@ -2,13 +2,13 @@
 sex_biased_admixture.py  —  v3 (facet-driven)
 ==============================================
 Sex-biased admixture analysis over a cohort of GSA genotype files
-(DDNA or Illumina GSGT — read via the shared genoio adapter).
+(DDNA or Illumina GSGT — read via the shared genotype normalizer).
 
 What is computed
 ----------------
-• Per-sample, per-chromosome SNP counts, heterozygosity rate, BAF
-  mean/variance, and LRR mean  (read directly from the genotype files)
-• Ancestry-like components via NMF(k=3) on subsampled BAF values,
+• Per-sample, per-chromosome SNP counts, heterozygosity rate, optional BAF
+  mean/variance, and optional LRR mean  (read directly from the genotype files)
+• Ancestry-like components via NMF(k=3) on rsID-aligned genotype signal,
   autosomes and X chromosome treated separately
 • Per-sex contrast of the above; the key panel (d) compares
   autosomal vs X heterozygosity by sex.
@@ -57,8 +57,12 @@ from matplotlib.lines import Line2D
 import matplotlib.ticker as ticker
 from sklearn.decomposition import NMF
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import genoio as _genoio  # noqa: E402  (synced fork, see genoio.py header)
+for _parent in Path(__file__).resolve().parents:
+    if (_parent / "tools" / "genotype_normalizer.py").exists():
+        sys.path.insert(0, str(_parent))
+        break
+sys.path.append("/opt/biovault")
+from tools import genotype_normalizer as _genoio  # noqa: E402
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 SCRIPT_DIR  = Path(__file__).resolve().parent
@@ -113,17 +117,18 @@ AUTOSOME_CHROMS = [str(c) for c in range(1, 23)]
 X_CHROM         = "X"
 NMF_SEED        = 42
 SUBSAMPLE_STEP  = 14   # autosomes: ~686 K SNPs → ~49 K after subsampling
+NMF_MIN_CALL_RATE = 0.80
 
 
 # ── Step 1: Load raw genotype files ───────────────────────────────────────────
 def read_txt(path: Path) -> pd.DataFrame:
     """Read one GSA .txt file; return DataFrame with chrom/baf/lrr/is_het.
 
-    Illumina GSGT synthetic carries no BAF/LRR, so those come back NaN and
-    the BAF-derived NMF/stat columns are uninformative for Illumina samples
-    (genotype-based het_rate is still valid)."""
+    Illumina GSGT synthetic carries no BAF/LRR, so those come back NaN.
+    Component/NMF paths use genotype signal, not BAF, so mixed DDNA/Illumina
+    cohorts stay comparable."""
     if _genoio.sniff_format(path) == "illumina":
-        g = _genoio.read_genotypes(path)
+        g = _genoio.read_pipeline_genotypes(path)
         df = g.rename(columns={"gt": "genotype"})[
             ["rsid", "chrom", "pos", "genotype", "gs", "baf", "lrr"]]
     else:
@@ -247,27 +252,103 @@ def chrom_stats_for_sample(df: pd.DataFrame, chroms: list) -> dict:
 
 
 # ── Step 4: NMF ancestry components ───────────────────────────────────────────
+def _genotype_signal(gt) -> float:
+    """Common-format genotype signal for NMF.
+
+    This intentionally removes BAF from the component calculation. Homozygous
+    calls are 0, heterozygous calls are 1, and no-calls are set to the neutral
+    midpoint 0.5 so missingness does not create a format-specific zero block.
+    """
+    gt = str(gt).strip().upper()
+    if len(gt) != 2 or gt in {"--", "00"} or "0" in gt or "-" in gt:
+        return np.nan
+    return 1.0 if gt[0] != gt[1] else 0.0
+
+
+def _region_label(chroms: list) -> str:
+    if chroms == AUTOSOME_CHROMS:
+        return "autosomes"
+    if chroms == [X_CHROM]:
+        return "x"
+    return "_".join(str(c).lower() for c in chroms)
+
+
+def _chrom_sort_key(chrom: str) -> int:
+    chrom = str(chrom)
+    if chrom.isdigit():
+        return int(chrom)
+    if chrom == "X":
+        return 23
+    if chrom == "Y":
+        return 24
+    return 99
+
+
 def nmf_components(samples: dict, chroms: list,
                    subsample_step: int = 1, seed: int = NMF_SEED) -> pd.DataFrame:
     """
-    Build a BAF matrix (n_samples × n_SNPs), run NMF(k=3), normalise
+    Build a genotype-signal matrix (n_samples × n_SNPs), run NMF(k=3), normalise
     each row to sum to 1, and return a DataFrame with columns c1/c2/c3.
 
     Note: with --alt-frequency 0.5 mock data every row is ~[0.33, 0.33, 0.33].
     """
     sample_ids = sorted(samples)
-    ref        = samples[sample_ids[0]]
+    region = _region_label(chroms)
+    per_sample: dict[str, pd.Series] = {}
+    metadata = []
 
-    # Build SNP index (same positions for all samples — same array)
-    mask    = ref["chrom"].isin(chroms)
-    snp_idx = np.where(mask)[0][::subsample_step]
-    log.info(f"    NMF: {len(snp_idx):,} SNPs from chroms {chroms[:3]}{'…' if len(chroms)>3 else ''}")
+    for sid in sample_ids:
+        sub = samples[sid].loc[
+            samples[sid]["chrom"].isin(chroms),
+            ["rsid", "chrom", "pos", "genotype"],
+        ].copy()
+        sub["rsid"] = sub["rsid"].astype(str)
+        sub = sub[sub["rsid"].str.match(r"^rs\d+$", na=False)]
+        sub = sub.drop_duplicates("rsid")
+        metadata.append(sub[["rsid", "chrom", "pos"]])
+        per_sample[sid] = sub.set_index("rsid")["genotype"].map(_genotype_signal)
 
-    # Matrix: rows = samples, cols = SNPs
-    mat = np.empty((len(sample_ids), len(snp_idx)), dtype=np.float32)
-    for i, sid in enumerate(sample_ids):
-        baf         = samples[sid]["baf"].values[snp_idx]
-        mat[i]      = np.where(np.isnan(baf), 0.5, baf)
+    panel = pd.concat(metadata, ignore_index=True).drop_duplicates("rsid")
+    panel["chrom_sort"] = panel["chrom"].map(_chrom_sort_key)
+    panel["pos"] = pd.to_numeric(panel["pos"], errors="coerce")
+    panel = panel.sort_values(["chrom_sort", "pos", "rsid"], kind="stable")
+    all_variant_ids = panel["rsid"].tolist()
+
+    signal = pd.DataFrame(
+        {sid: per_sample[sid].reindex(all_variant_ids) for sid in sample_ids},
+        index=all_variant_ids,
+    )
+    called = signal.notna()
+    call_count = called.sum(axis=1)
+    call_rate = call_count / len(sample_ids)
+    variance = signal.var(axis=1, skipna=True)
+    keep = (call_rate >= NMF_MIN_CALL_RATE) & (variance.fillna(0.0) > 0.0)
+
+    filter_df = panel.set_index("rsid").reindex(all_variant_ids)[["chrom", "pos"]].copy()
+    filter_df.insert(0, "rsid", all_variant_ids)
+    filter_df["called_samples"] = call_count.to_numpy(dtype=int)
+    filter_df["missing_samples"] = (len(sample_ids) - call_count).to_numpy(dtype=int)
+    filter_df["call_rate"] = call_rate.to_numpy(dtype=float)
+    filter_df["variance"] = variance.fillna(0.0).to_numpy(dtype=float)
+    filter_df["filter"] = np.where(
+        call_rate < NMF_MIN_CALL_RATE,
+        "low_call_rate",
+        np.where(variance.fillna(0.0) <= 0.0, "zero_variance", "pass"),
+    )
+    filter_path = RESULTS_DIR / f"nmf_variant_filter_{region}.tsv"
+    filter_df[filter_df["filter"] != "pass"].to_csv(filter_path, sep="\t", index=False)
+    log.info(
+        f"    NMF variant filter ({region}): {int(keep.sum()):,}/{len(keep):,} pass "
+        f"(min_call_rate={NMF_MIN_CALL_RATE:.2f}); dropped variants -> {filter_path}"
+    )
+
+    variant_ids = signal.index[keep].tolist()[::subsample_step]
+    log.info(
+        f"    NMF: {len(variant_ids):,} cohort rsID-aligned SNPs from chroms "
+        f"{chroms[:3]}{'…' if len(chroms)>3 else ''}"
+    )
+
+    mat = signal.loc[variant_ids, sample_ids].fillna(0.5).T.to_numpy(dtype=np.float32)
 
     model = NMF(n_components=3, random_state=seed, max_iter=1000)
     W     = model.fit_transform(mat)          # (n_samples, 3)

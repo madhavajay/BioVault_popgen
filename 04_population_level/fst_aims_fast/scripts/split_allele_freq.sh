@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # split_allele_freq.sh - per-country allele-frequency split (biosynth container)
 #
-# Runs inside ghcr.io/openmined/biosynth:0.1.22. Mirrors what the repo-level
+# Runs inside the pinned BIOSYNTH_IMAGE. Mirrors what the repo-level
 # 04_run_allele_freq.sh does, but driven by the `country` participant facet
 # instead of a static island_mapping.tsv:
 #

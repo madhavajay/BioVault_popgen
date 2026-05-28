@@ -42,8 +42,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import genoio as _genoio  # noqa: E402  (synced fork, see genoio.py header)
+for _parent in Path(__file__).resolve().parents:
+    if (_parent / "tools" / "genotype_normalizer.py").exists():
+        sys.path.insert(0, str(_parent))
+        break
+sys.path.append("/opt/biovault")
+from tools import genotype_normalizer as _genoio  # noqa: E402
 
 
 AUTOSOMES_S2 = np.array([str(c).encode() for c in range(1, 23)], dtype="S2")
@@ -60,7 +64,7 @@ def read_ddna_fast(path: str, min_gs: float):
     if _genoio.sniff_format(path) == "illumina":
         # GSGT synthetic carries no GenCall score; treat every call as
         # confident (gs = 1.0) so the gs >= min_gs filter is a no-op.
-        gdf = _genoio.read_genotypes(path)
+        gdf = _genoio.read_pipeline_genotypes(path)
         rsid = gdf["rsid"].to_numpy(dtype=object)
         chrom = gdf["chrom"].to_numpy(dtype=object).astype("S2")
         pos = gdf["pos"].astype("int64").to_numpy()
@@ -71,17 +75,21 @@ def read_ddna_fast(path: str, min_gs: float):
             path, sep="\t", comment="#", header=None,
             names=["rsid", "chrom", "pos", "gt", "gs", "baf", "lrr"],
             usecols=["rsid", "chrom", "pos", "gt", "gs"],
-            dtype={"rsid": str, "chrom": str, "pos": np.int64, "gt": str, "gs": np.float32},
+            dtype={"rsid": str, "chrom": str, "pos": str, "gt": str, "gs": str},
             engine="c", na_filter=False,
         )
+        df["pos"] = pd.to_numeric(df["pos"], errors="coerce")
+        df["gs"] = pd.to_numeric(df["gs"], errors="coerce")
         rsid = df["rsid"].to_numpy(dtype=object)
         chrom = df["chrom"].to_numpy(dtype=object).astype("S2")
-        pos = df["pos"].to_numpy(dtype=np.int64)
+        pos = df["pos"].to_numpy(dtype=np.float64)
         gt = df["gt"].to_numpy(dtype=object).astype("S2")
         gs = df["gs"].to_numpy(dtype=np.float32)
 
     # Drop rows where rsid == "rsid" (any embedded header row).
     mask = rsid != "rsid"
+    mask &= np.isfinite(pos)
+    mask &= np.isfinite(gs)
     mask &= gs >= np.float32(min_gs)
     mask &= np.isin(chrom, AUTOSOMES_S2)
 
@@ -92,7 +100,7 @@ def read_ddna_fast(path: str, min_gs: float):
     mask &= np.isin(gt_view[:, 1], BASES_S1)
 
     keep = np.flatnonzero(mask)
-    return rsid[keep], chrom[keep], pos[keep], gt[keep]
+    return rsid[keep], chrom[keep], pos[keep].astype(np.int64), gt[keep]
 
 
 # Globals populated in worker init / main process; readable across forks.
@@ -151,7 +159,7 @@ def main():
     args = ap.parse_args()
 
     sample_dirs = sorted(
-        d for d in glob.glob(os.path.join(args.data_dir, "[0-9]*"))
+        d for d in glob.glob(os.path.join(args.data_dir, "*"))
         if os.path.isdir(d)
     )
     if not sample_dirs:

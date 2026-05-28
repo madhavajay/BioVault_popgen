@@ -76,7 +76,8 @@ python3 "${SCRIPTS}/generate_biased_cohort.py" \
     --count "${COUNT}" \
     --bias-blocks "${BLOCKS}" \
     --out-dir "${OUT_DIR}" \
-    --seed "${SEED}"
+    --seed "${SEED}" \
+    --biallelic
 
 echo
 echo "[3/3] done. cohort -> ${OUT_DIR}"

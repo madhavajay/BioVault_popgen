@@ -37,9 +37,9 @@ workflow USER {
 }
 
 process gnomad_projection_fast {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.1-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.2-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
-    stageInMode 'copy'
+    stageInMode 'symlink'
     errorStrategy 'terminate'
 
     input:
@@ -54,7 +54,7 @@ process gnomad_projection_fast {
     def staging = []
     participant_ids.eachWithIndex { pid, idx ->
         def fname = genotype_files[idx].getName()
-        staging << "mkdir -p input/${pid} && mv '${fname}' 'input/${pid}/'"
+        staging << "mkdir -p input/${pid} && ln -s \"../../${fname}\" \"input/${pid}/${fname}\""
     }
     """
     set -euo pipefail

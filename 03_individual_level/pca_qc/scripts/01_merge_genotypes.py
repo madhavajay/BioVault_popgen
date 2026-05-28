@@ -12,11 +12,17 @@ Output: data/merged/genotype_matrix_raw.tsv   — rsid x sample_id, genotype str
 import os
 import glob
 import logging
+import sys
 import pandas as pd
 from pathlib import Path
 
 try:
-    import genoio as _genoio
+    for _parent in Path(__file__).resolve().parents:
+        if (_parent / "tools" / "genotype_normalizer.py").exists():
+            sys.path.insert(0, str(_parent))
+            break
+    sys.path.append("/opt/biovault")
+    from tools import genotype_normalizer as _genoio
 except ImportError:
     _genoio = None
 
@@ -64,7 +70,7 @@ def find_genotype_file(sample_dir: Path) -> Path:
 def read_genotype_file(path: Path) -> pd.DataFrame:
     """Read a genotype file, skipping comment lines."""
     if _genoio is not None:
-        df = _genoio.read_genotypes(path).rename(
+        df = _genoio.read_pipeline_genotypes(path).rename(
             columns={"chrom": "chromosome", "pos": "position", "gt": "genotype"}
         )
         return df[["rsid", "chromosome", "position", "genotype", "gs", "baf", "lrr"]]

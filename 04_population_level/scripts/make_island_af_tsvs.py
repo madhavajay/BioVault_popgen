@@ -37,12 +37,20 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 import time
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+for _parent in Path(__file__).resolve().parents:
+    if (_parent / "tools" / "genotype_normalizer.py").exists():
+        sys.path.insert(0, str(_parent))
+        break
+sys.path.append("/opt/biovault")
+from tools import genotype_normalizer as genoio  # noqa: E402
 
 # Island label (in mapping) → filename suffix (matches 01_load_merge.py).
 ISLAND_FILENAMES = {
@@ -63,19 +71,10 @@ def setup_logging():
 
 
 def read_genotypes(txt_path: Path, min_gs: float) -> pd.DataFrame:
-    """Read one DDNA TXT, return [rsid, chrom, pos, a1, a2] for valid SNP rows."""
-    df = pd.read_csv(
-        txt_path,
-        sep="\t",
-        header=None,
-        comment="#",
-        names=["rsid", "chrom", "pos", "gt", "gs", "baf", "lrr"],
-        usecols=["rsid", "chrom", "pos", "gt", "gs"],
-        dtype={"rsid": str, "chrom": str, "pos": np.int32, "gt": str, "gs": float},
-        engine="c",
-    )
-    df = df[df["rsid"] != "rsid"]                                    # drop header row if any
+    """Read one genotype TXT, return [rsid, chrom, pos, a1, a2] for valid SNP rows."""
+    df = genoio.read_pipeline_genotypes(txt_path)
     df = df[df["chrom"].isin([str(c) for c in range(1, 23)])]        # autosomes only
+    df["gs"] = pd.to_numeric(df["gs"], errors="coerce").fillna(1.0)  # Illumina GSGT has no GS
     df = df[df["gs"] >= min_gs]                                      # gencall filter
     df = df[df["gt"].str.len() == 2]                                 # 2-char genotype
     df["a1"] = df["gt"].str[0]

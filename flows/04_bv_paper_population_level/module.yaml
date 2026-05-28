@@ -24,7 +24,7 @@ spec:
     kind: nextflow
     entrypoint: main.nf
     template: dynamic-nextflow
-    image: biovault-popgen:0.1.1-fast
+    image: ghcr.io/madhavajay/biovault-popgen:0.1.2-fast
   inputs:
     - name: participants
       type: List[GenotypeRecord]

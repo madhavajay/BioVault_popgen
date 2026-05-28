@@ -17,6 +17,8 @@ spec:
         participants: inputs.samplesheet
       publish:
         sex_bias_results: File(sex_bias_results.tsv)
+        nmf_variant_filter_autosomes: File(nmf_variant_filter_autosomes.tsv)
+        nmf_variant_filter_x: File(nmf_variant_filter_x.tsv)
         sex_bias_plot: File(figure4_sex_biased_admixture.png)
         sex_bias_plot_pdf: File(figure4_sex_biased_admixture.pdf)
         pipeline_log: File(sex_biased_admixture.log)

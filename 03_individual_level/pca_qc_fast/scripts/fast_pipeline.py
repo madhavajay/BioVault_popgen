@@ -33,8 +33,12 @@ from sklearn.decomposition import PCA
 from sklearn.impute import SimpleImputer
 
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import genoio as _genoio  # noqa: E402  (synced fork, see genoio.py header)
+for _parent in Path(__file__).resolve().parents:
+    if (_parent / "tools" / "genotype_normalizer.py").exists():
+        sys.path.insert(0, str(_parent))
+        break
+sys.path.append("/opt/biovault")
+from tools import genotype_normalizer as _genoio  # noqa: E402
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -93,20 +97,20 @@ def timed(label: str):
 def discover_samples() -> list[tuple[str, Path]]:
     samples: list[tuple[str, Path]] = []
     for sample_dir in sorted(DATA_DIR.iterdir()):
-        if not sample_dir.is_dir() or not sample_dir.name.isdigit():
+        if not sample_dir.is_dir():
             continue
         txt_files = sorted(sample_dir.glob("*.txt"))
         if txt_files:
             samples.append((sample_dir.name, txt_files[0]))
     if not samples:
-        raise RuntimeError(f"No numeric sample directories with .txt files found under {DATA_DIR}")
+        raise RuntimeError(f"No sample directories with .txt files found under {DATA_DIR}")
     return samples
 
 
 def read_sample(task: tuple[str, Path]) -> tuple[str, pd.DataFrame]:
     sample_id, path = task
     if _genoio.sniff_format(path) == "illumina":
-        g = _genoio.read_genotypes(path)
+        g = _genoio.read_pipeline_genotypes(path)
         df = g[["rsid", "chrom", "pos", "gt"]].rename(columns={
             "chrom": "chromosome", "pos": "position", "gt": "genotype"})
         df["position"] = df["position"].astype(np.int64)

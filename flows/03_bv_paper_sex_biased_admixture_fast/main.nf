@@ -7,8 +7,9 @@
 // (03_individual_level.sh --sex) feeds it. Sex is NEVER inferred from BAF.
 //
 // The image bakes the script *contents* flat into
-//   /opt/biovault/scripts/sex_biased_admixture_fast/  (fast loader + genoio)
+//   /opt/biovault/scripts/sex_biased_admixture_fast/  (fast loader)
 //   /opt/biovault/scripts/sex_biased_admixture/        (original analysis)
+//   /opt/biovault/tools/                               (shared normalizer)
 // fast_sex_biased_admixture.py resolves _BASE = parents[1] and
 // ORIG_SCRIPTS = parents[2]/sex_biased_admixture/scripts, so both trees are
 // reconstructed under the writable workdir before running.
@@ -51,15 +52,17 @@ workflow USER {
 
     emit:
         sex_bias_results  = result.sex_bias_results
+        nmf_variant_filter_autosomes = result.nmf_variant_filter_autosomes
+        nmf_variant_filter_x = result.nmf_variant_filter_x
         sex_bias_plot     = result.sex_bias_plot
         sex_bias_plot_pdf = result.sex_bias_plot_pdf
         pipeline_log      = result.pipeline_log
 }
 
 process sex_biased_admixture_fast {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.1-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.2-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
-    stageInMode 'copy'
+    stageInMode 'symlink'
     errorStrategy { params.nextflow.error_strategy }
     maxRetries { params.nextflow.max_retries }
 
@@ -68,6 +71,8 @@ process sex_biased_admixture_fast {
 
     output:
         path "sex_bias_results.tsv",                emit: sex_bias_results
+        path "nmf_variant_filter_autosomes.tsv",    emit: nmf_variant_filter_autosomes, optional: true
+        path "nmf_variant_filter_x.tsv",            emit: nmf_variant_filter_x, optional: true
         path "figure4_sex_biased_admixture.png",    emit: sex_bias_plot, optional: true
         path "figure4_sex_biased_admixture.pdf",    emit: sex_bias_plot_pdf, optional: true
         path "sex_biased_admixture.log",            emit: pipeline_log, optional: true
@@ -77,7 +82,7 @@ process sex_biased_admixture_fast {
     def sexMap = []
     participant_ids.eachWithIndex { pid, idx ->
         def fname = genotype_files[idx].getName()
-        staging << "mkdir -p input/${pid} && mv '${fname}' 'input/${pid}/'"
+        staging << "mkdir -p input/${pid} && ln -s \"../../${fname}\" \"input/${pid}/${fname}\""
         sexMap << "${pid}\t${sexes[idx]}"
     }
     def sexMapText = sexMap.join('\\n')
@@ -118,6 +123,10 @@ process sex_biased_admixture_fast {
 
     # Hoist artefacts to the process root so publishDir picks them up.
     cp sex_biased_admixture_fast/results/sex_bias_results.tsv sex_bias_results.tsv
+    [ -f sex_biased_admixture_fast/results/nmf_variant_filter_autosomes.tsv ] && \\
+        cp sex_biased_admixture_fast/results/nmf_variant_filter_autosomes.tsv nmf_variant_filter_autosomes.tsv || true
+    [ -f sex_biased_admixture_fast/results/nmf_variant_filter_x.tsv ] && \\
+        cp sex_biased_admixture_fast/results/nmf_variant_filter_x.tsv nmf_variant_filter_x.tsv || true
     [ -f sex_biased_admixture_fast/plots/figure4_sex_biased_admixture.png ] && \\
         cp sex_biased_admixture_fast/plots/figure4_sex_biased_admixture.png figure4_sex_biased_admixture.png || true
     [ -f sex_biased_admixture_fast/plots/figure4_sex_biased_admixture.pdf ] && \\
