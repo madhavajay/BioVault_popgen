@@ -147,7 +147,7 @@ process split_allele_freq {
 }
 
 process population_fst_aims {
-    container 'biovault-popgen:0.1.1-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.1-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'copy'
     errorStrategy { params.nextflow.error_strategy }

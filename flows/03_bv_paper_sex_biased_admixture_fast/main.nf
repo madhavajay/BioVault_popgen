@@ -57,7 +57,7 @@ workflow USER {
 }
 
 process sex_biased_admixture_fast {
-    container 'biovault-popgen:0.1.1-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.1-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'copy'
     errorStrategy { params.nextflow.error_strategy }
