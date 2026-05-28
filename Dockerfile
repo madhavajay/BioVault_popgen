@@ -51,6 +51,7 @@ RUN tar -xzf /tmp/gnomad.v3.1.pca_loadings.ht.tar.gz -C /opt/biovault/reference/
     rm -f /tmp/gnomad.v3.1.pca_loadings.ht.tar.gz
 COPY .docker/reference/aims/gnomad_af_per_locus.tsv /opt/biovault/reference/aims/gnomad_af_per_locus.tsv
 COPY tools /opt/biovault/tools
+COPY 00_qc_all_files/scripts /opt/biovault/scripts/qc_all_files
 COPY 03_individual_level/gnomad_projection/scripts /opt/biovault/scripts/gnomad_projection
 COPY 03_individual_level/gnomad_projection_fast/scripts /opt/biovault/scripts/gnomad_projection_fast
 COPY 03_individual_level/pca_qc_fast/scripts /opt/biovault/scripts/pca_qc_fast
@@ -108,6 +109,7 @@ RUN mkdir -p /opt/biovault/reference/pca_loadings /opt/biovault/reference/aims /
 COPY .docker/reference/pca_loadings/loadings.npz ${LOADINGS_NPZ}
 COPY .docker/reference/aims/gnomad_af_per_locus.tsv /opt/biovault/reference/aims/gnomad_af_per_locus.tsv
 COPY tools /opt/biovault/tools
+COPY 00_qc_all_files/scripts /opt/biovault/scripts/qc_all_files
 COPY 03_individual_level/gnomad_projection_fast/scripts /opt/biovault/scripts/gnomad_projection_fast
 COPY 03_individual_level/pca_qc_fast/scripts /opt/biovault/scripts/pca_qc_fast
 COPY 03_individual_level/sex_biased_admixture/scripts /opt/biovault/scripts/sex_biased_admixture

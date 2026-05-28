@@ -1,0 +1,83 @@
+apiVersion: syftbox.openmined.org/v1alpha1
+kind: Module
+metadata:
+  name: 00_bv_paper_qc_all_files
+  version: 0.1.3
+  authors:
+    - madhava@openmined.org
+  description: |
+    Preflight QC for genotype uploads. Parses every staged genotype file,
+    reports exact problematic line contents, and writes per-file status before
+    downstream analyses run.
+spec:
+  runner:
+    kind: nextflow
+    entrypoint: main.nf
+    template: dynamic-nextflow
+    image: ghcr.io/madhavajay/biovault-popgen:0.1.3-fast
+  inputs:
+    - name: participants
+      type: List[GenotypeRecord]
+      description: CSV/TSV with participant_id and genotype_file columns, plus optional sex/country facets.
+      format:
+        kind: csv
+        mapping:
+          participant_id: participant_id
+          genotype_file: genotype_file
+  outputs:
+    - name: file_summary
+      type: File
+      description: Per-file pass/fail summary, normalized row counts, and issue counts.
+      format:
+        kind: tsv
+      path: file_summary.tsv
+    - name: issues
+      type: File
+      description: Line-level QC issues, including exact raw line contents.
+      format:
+        kind: tsv
+      path: issues.tsv
+    - name: errors
+      type: File
+      description: Hard QC errors that may prevent downstream pipelines from running safely.
+      format:
+        kind: tsv
+      path: errors.tsv
+    - name: warnings
+      type: File
+      description: Suspicious but non-blocking QC warnings.
+      format:
+        kind: tsv
+      path: warnings.tsv
+    - name: quality_issues
+      type: File
+      description: Expected vendor/data-quality observations that are non-blocking for downstream analyses.
+      format:
+        kind: tsv
+      path: quality_issues.tsv
+    - name: summary_json
+      type: File
+      description: Aggregate QC counts.
+      path: summary.json
+    - name: report
+      type: File
+      description: Human-readable aggregate QC report with file, warning-row, facet, and usability percentages.
+      path: report.txt
+    - name: facet_values
+      type: File
+      description: Per-file participant facet values, with missing-value flags.
+      format:
+        kind: tsv
+      path: facet_values.tsv
+    - name: facet_summary
+      type: File
+      description: Unique values and counts for every participant facet.
+      format:
+        kind: tsv
+      path: facet_summary.tsv
+    - name: pipeline_log
+      type: File
+      description: Human-readable QC log.
+      path: qc_all_files.log
+  parameters: []
+  assets: []

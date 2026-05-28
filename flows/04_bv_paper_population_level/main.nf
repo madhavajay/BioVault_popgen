@@ -7,7 +7,7 @@
 //       per-participant `bvs emit-long`, then per-country `bvs aggregate-long`
 //       -> allele_freq_<country_norm>.tsv
 //
-//   population_fst_aims  (ghcr.io/madhavajay/biovault-popgen:0.1.2-fast)
+//   population_fst_aims  (ghcr.io/madhavajay/biovault-popgen:0.1.3-fast)
 //       FST (load/merge -> WC84 -> visualise) then AIMs (merge w/ bundled
 //       gnomAD ref -> differential SNPs -> AIMs panels)
 //
@@ -39,22 +39,27 @@ workflow USER {
         participants
 
     main:
-        def records = participants.map { record ->
-            def country = normalizeCountry(record.country?.toString())
-            if (!country) {
-                throw new IllegalArgumentException(
-                    "Participant ${record.participant_id} has an empty 'country' " +
-                    "facet after normalization. The flow declares " +
-                    "required_facets: [country]; the samplesheet should have " +
-                    "been rejected upstream."
-                )
+        def records = participants.flatMap { record ->
+            def validation = record.validation ?: [status: 'ok', message: '']
+            if (validation.status?.toString() != 'ok') {
+                println "[bv] WARNING: skipping participant ${record.participant_id}: genotype file ${validation.status} - ${validation.message}"
+                return []
             }
-            tuple(record.participant_id.toString(), country, file(record.genotype_file))
+            def facets = record.facets ?: [:]
+            def country = normalizeCountry((record.country ?: facets.country)?.toString())
+            if (!country) {
+                println "[bv] WARNING: skipping participant ${record.participant_id}: missing required country facet"
+                return []
+            }
+            return [tuple(record.participant_id.toString(), country, file(record.genotype_file))]
         }
 
         def collected = records
             .collect(flat: false)
             .map { items ->
+                if (items.isEmpty()) {
+                    throw new IllegalArgumentException("No valid participants with readable genotype files and country facet remained")
+                }
                 tuple(
                     items.collect { it[0] },
                     items.collect { it[1] },
@@ -73,6 +78,8 @@ workflow USER {
         differential_snps  = result.differential_snps
         aims_combined      = result.aims_combined
         summary            = result.summary
+        errors             = result.errors
+        warnings           = result.warnings
 }
 
 process split_allele_freq {
@@ -116,40 +123,78 @@ process split_allele_freq {
     # script needed in this container. Mirrors 04_population_level/fst_aims_fast
     # /scripts/split_allele_freq.sh (kept as the by-hand reference).
     mkdir -p bvlr
+    : > successful_mapping.tsv
+    : > skipped_participants.tsv
     while IFS="\$(printf '\\t')" read -r pid country fname; do
         [ -n "\${pid}" ] || continue
         src="geno/\${fname}"
-        [ -s "\${src}" ] || { echo "ERROR: missing genotype \${pid}: \${src}" >&2; exit 1; }
-        bvs emit-long --input "\${src}" --output "bvlr/\${pid}.bvlr" \\
-            --participant "\${pid}" >/dev/null
+        if [ ! -s "\${src}" ]; then
+            echo "WARNING: skipping participant \${pid}: missing or empty genotype \${src}" >&2
+            printf '%s\\t%s\\t%s\\tmissing_or_empty_genotype\\n' "\${pid}" "\${country}" "\${fname}" >> skipped_participants.tsv
+            continue
+        fi
+        if ! bvs emit-long --input "\${src}" --output "bvlr/\${pid}.bvlr" \\
+            --participant "\${pid}" >/dev/null; then
+            echo "WARNING: skipping participant \${pid}: bvs emit-long failed for \${src}" >&2
+            printf '%s\\t%s\\t%s\\temit_long_failed\\n' "\${pid}" "\${country}" "\${fname}" >> skipped_participants.tsv
+            rm -f "bvlr/\${pid}.bvlr"
+            continue
+        fi
+        if [ ! -s "bvlr/\${pid}.bvlr" ]; then
+            echo "WARNING: skipping participant \${pid}: bvs emit-long produced an empty .bvlr" >&2
+            printf '%s\\t%s\\t%s\\tempty_bvlr\\n' "\${pid}" "\${country}" "\${fname}" >> skipped_participants.tsv
+            rm -f "bvlr/\${pid}.bvlr"
+            continue
+        fi
+        printf '%s\\t%s\\t%s\\n' "\${pid}" "\${country}" "\${fname}" >> successful_mapping.tsv
     done < mapping.tsv
 
+    [ -s successful_mapping.tsv ] || { echo "ERROR: no participants produced usable .bvlr files" >&2; exit 1; }
+
     FAIL=0
-    for country in \$(cut -f2 mapping.tsv | sort -u); do
+    : > successful_countries.txt
+    for country in \$(cut -f2 successful_mapping.tsv | sort -u); do
         cdir="agg_\${country}"; mkdir -p "\${cdir}"; n=0
         while IFS="\$(printf '\\t')" read -r pid c _; do
             [ "\${c}" = "\${country}" ] || continue
             [ -s "bvlr/\${pid}.bvlr" ] && { cp "bvlr/\${pid}.bvlr" "\${cdir}/"; n=\$((n+1)); }
-        done < mapping.tsv
-        [ "\${n}" -gt 0 ] || { echo "ERROR: country '\${country}' produced 0 .bvlr" >&2; FAIL=1; continue; }
+        done < successful_mapping.tsv
+        [ "\${n}" -gt 0 ] || { echo "WARNING: country '\${country}' produced 0 .bvlr; skipping" >&2; continue; }
         out="af_out/allele_freq_\${country}.tsv"
         echo "  \${country} (\${n} participants) -> \${out}"
-        bvs aggregate-long --input "\${cdir}" \\
+        if ! bvs aggregate-long --input "\${cdir}" \\
             --matrix-tsv "matrix_\${country}.tsv" \\
-            --allele-freq-tsv "\${out}" >/dev/null
-        [ -s "\${out}" ] || { echo "ERROR: empty AF for \${country}" >&2; FAIL=1; }
+            --allele-freq-tsv "\${out}" >/dev/null; then
+            echo "WARNING: bvs aggregate-long failed for country '\${country}'; skipping" >&2
+            rm -f "\${out}"
+            continue
+        fi
+        if [ ! -s "\${out}" ]; then
+            echo "WARNING: empty AF for country '\${country}'; skipping" >&2
+            rm -f "\${out}"
+            continue
+        fi
+        printf '%s\\n' "\${country}" >> successful_countries.txt
     done
-    [ "\${FAIL}" -eq 0 ] || { echo "ERROR: per-country split failed" >&2; exit 1; }
+    [ -s successful_countries.txt ] || { echo "ERROR: no countries produced aggregate allele-frequency files" >&2; exit 1; }
 
-    { printf 'participant_id\\tcountry\\n'; cut -f1,2 mapping.tsv; } \\
+    { printf 'participant_id\\tcountry\\n'; cut -f1,2 successful_mapping.tsv; } \\
         > af_out/country_map.tsv
+    if [ -s skipped_participants.tsv ]; then
+        { printf 'participant_id\\tfile\\tseverity\\tcode\\tmessage\\n'; \\
+          awk -F '\\t' 'BEGIN { OFS="\\t" } { print \$1, \$3, "ERROR", \$4, "country=" \$2 }' skipped_participants.tsv; } \\
+            > af_out/errors.tsv
+    else
+        printf 'participant_id\\tfile\\tseverity\\tcode\\tmessage\\n' > af_out/errors.tsv
+    fi
+    printf 'file\\tline_no\\tseverity\\tcode\\tmessage\\traw_line\\n' > af_out/warnings.tsv
 
-    POPULATIONS="\$(cut -f2 mapping.tsv | sort -u | paste -sd, -)"
+    POPULATIONS="\$(paste -sd, successful_countries.txt)"
     """
 }
 
 process population_fst_aims {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.2-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.3-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy { params.nextflow.error_strategy }
@@ -167,6 +212,8 @@ process population_fst_aims {
         path "all_outliers_long.tsv",              emit: differential_snps
         path "aims_combined.tsv",                  emit: aims_combined
         path "population_level_summary.txt",       emit: summary
+        path "errors.tsv",                         emit: errors, optional: true
+        path "warnings.tsv",                       emit: warnings, optional: true
         path "*.png",                              emit: plots, optional: true
         path "*.pdf",                              emit: plots_pdf, optional: true
 
@@ -193,5 +240,7 @@ process population_fst_aims {
         [ -f "\${f}" ] || { echo "ERROR: no aggregate allele_freq_*.tsv files found in ${af_dir}" >&2; exit 1; }
         cp "\${f}" .
     done
+    [ -f "\${PWD}/${af_dir}/errors.tsv" ] && cp "\${PWD}/${af_dir}/errors.tsv" errors.tsv || true
+    [ -f "\${PWD}/${af_dir}/warnings.tsv" ] && cp "\${PWD}/${af_dir}/warnings.tsv" warnings.tsv || true
     """
 }

@@ -13,6 +13,7 @@ Illumina it is the extracted/resolved rsid when available, otherwise a
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 import re
 import sqlite3
@@ -24,8 +25,35 @@ import pandas as pd
 
 CANON = ["variant_id", "rsid", "probe_id", "chrom", "pos", "gt", "gs", "baf", "lrr"]
 PIPELINE_CANON = ["rsid", "chrom", "pos", "gt", "gs", "baf", "lrr"]
+DDNA_COLS = ["rsid", "chrom", "pos", "gt", "gs", "baf", "lrr"]
 RS_RE = re.compile(r"rs\d+", re.IGNORECASE)
 NO_CALLS = {"", "-", ".", "N", "n", "0"}
+
+
+def _warning_path() -> str:
+    return os.environ.get("BIOVAULT_WARNINGS_TSV", "").strip()
+
+
+def emit_parse_warning(
+    path: str | Path,
+    line_no: int | str,
+    code: str,
+    message: str,
+    raw_line: str = "",
+) -> None:
+    """Append a tolerated row-level parse issue when BIOVAULT_WARNINGS_TSV is set."""
+    out = _warning_path()
+    if not out:
+        return
+    parent = os.path.dirname(out)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    write_header = not os.path.exists(out) or os.path.getsize(out) == 0
+    with open(out, "a", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        if write_header:
+            writer.writerow(["file", "line_no", "severity", "code", "message", "raw_line"])
+        writer.writerow([str(path), line_no, "WARNING", code, message, raw_line])
 
 
 def sniff_format(path: str | Path) -> str:
@@ -60,6 +88,25 @@ def normalize_gt(a1: str, a2: str | None = None) -> str:
     if a1 in NO_CALLS or a2 in NO_CALLS:
         return "--"
     return f"{a1}{a2}"
+
+
+def clean_chrom(value: str) -> str:
+    chrom = str(value).strip()
+    if chrom.lower().startswith("chr"):
+        chrom = chrom[3:]
+    return chrom.upper()
+
+
+def valid_chrom(value: str) -> bool:
+    chrom = clean_chrom(value)
+    return chrom in {str(i) for i in range(1, 23)} | {"X", "Y", "M", "MT", "XY"}
+
+
+def valid_gt(value: str) -> bool:
+    gt = str(value).strip().upper()
+    if gt in {"--", "II", "ID", "DI", "DD"}:
+        return True
+    return len(gt) == 2 and all(base in {"A", "C", "G", "T"} for base in gt)
 
 
 def load_locus_map(path: str | Path | None) -> dict[tuple[str, int], str]:
@@ -139,7 +186,7 @@ def add_locus_mapping(
 
 def canonical_rsid(value: str) -> str:
     value = str(value).strip()
-    if not value:
+    if not value or value in {".", "-"}:
         return ""
     return value if value.lower().startswith("rs") else f"rs{value}"
 
@@ -153,27 +200,99 @@ def variant_id_for(rsid: str, chrom: str, pos: int, locus_map: dict[tuple[str, i
     return f"{chrom}:{int(pos)}"
 
 
-def read_ddna(path: str | Path) -> pd.DataFrame:
+def finalize_ddna_frame(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=CANON)
+    df = df.copy()
+    df["rsid"] = df["rsid"].astype(str).str.strip().str.lstrip("\ufeff")
+    df = df[(df["rsid"] != "") & (df["rsid"].str.lower() != "rsid")].copy()
+    df["rsid"] = df["rsid"].map(canonical_rsid)
+    df["chrom"] = df["chrom"].map(clean_chrom)
+    df["probe_id"] = df["rsid"]
+    df["pos"] = pd.to_numeric(df["pos"], errors="coerce")
+    df = df[df["pos"].notna() & (df["pos"] > 0)].copy()
+    df["pos"] = df["pos"].astype("Int64")
+    df["variant_id"] = [
+        rsid if rsid else (f"{chrom}:{int(pos)}" if pd.notna(pos) else "")
+        for rsid, chrom, pos in zip(df["rsid"], df["chrom"], df["pos"])
+    ]
+    for col in ("gs", "baf", "lrr"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df["gt"] = df["gt"].map(normalize_gt)
+    df = df[
+        (df["variant_id"] != "")
+        & df["chrom"].map(valid_chrom)
+        & df["gt"].map(valid_gt)
+    ].copy()
+    return df[CANON].reset_index(drop=True)
+
+
+def read_ddna_fast(path: str | Path) -> pd.DataFrame:
     df = pd.read_csv(
         path,
         sep="\t",
         comment="#",
         header=None,
         names=["rsid", "chrom", "pos", "gt", "gs", "baf", "lrr"],
-        dtype={"rsid": str, "chrom": str, "pos": "Int64", "gt": str},
+        dtype={"rsid": str, "chrom": str, "pos": str, "gt": str},
         na_filter=False,
         engine="c",
         low_memory=False,
     )
-    df = df[df["rsid"] != "rsid"].copy()
-    df["rsid"] = df["rsid"].map(canonical_rsid)
-    df["probe_id"] = df["rsid"]
-    df["variant_id"] = df["rsid"]
-    df["pos"] = pd.to_numeric(df["pos"], errors="coerce").astype("Int64")
-    for col in ("gs", "baf", "lrr"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df["gt"] = df["gt"].map(normalize_gt)
-    return df[CANON].reset_index(drop=True)
+    return finalize_ddna_frame(df)
+
+
+def read_ddna_robust(path: str | Path) -> pd.DataFrame:
+    rows: list[list[str]] = []
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        for line_no, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            fields = line.rstrip("\n").rstrip("\r").split("\t")
+            lower = [field.strip().lstrip("\ufeff").lower() for field in fields]
+            if lower[:7] == DDNA_COLS:
+                continue
+            if len(fields) != 7:
+                emit_parse_warning(
+                    path,
+                    line_no,
+                    "DDNA_FIELD_COUNT",
+                    f"expected 7 tab-separated fields, found {len(fields)}",
+                    line.rstrip("\n").rstrip("\r"),
+                )
+                continue
+            values = [field.strip() for field in fields]
+            _rsid, chrom, pos, gt, _gs, _baf, _lrr = values
+            chrom_clean = clean_chrom(chrom)
+            if chrom_clean == "0":
+                continue
+            if not valid_chrom(chrom_clean):
+                emit_parse_warning(path, line_no, "INVALID_CHROM", f"invalid chromosome: {chrom!r}", line.rstrip("\n").rstrip("\r"))
+                continue
+            try:
+                pos_i = int(pos)
+            except ValueError:
+                emit_parse_warning(path, line_no, "INVALID_POSITION", f"position is not an integer: {pos!r}", line.rstrip("\n").rstrip("\r"))
+                continue
+            if pos_i <= 0:
+                continue
+            normalized_gt = normalize_gt(gt)
+            if not valid_gt(normalized_gt):
+                emit_parse_warning(path, line_no, "INVALID_GENOTYPE", f"invalid genotype: {gt!r}", line.rstrip("\n").rstrip("\r"))
+                continue
+            rows.append(values)
+    return finalize_ddna_frame(pd.DataFrame(rows, columns=DDNA_COLS))
+
+
+def read_ddna(path: str | Path) -> pd.DataFrame:
+    if _warning_path():
+        return read_ddna_robust(path)
+    try:
+        return read_ddna_fast(path)
+    except Exception as exc:
+        emit_parse_warning(path, 0, "DDNA_FAST_PARSE_FALLBACK", f"{type(exc).__name__}: {exc}")
+        return read_ddna_robust(path)
 
 
 def read_illumina(path: str | Path, locus_map: dict[tuple[str, int], str] | None = None) -> pd.DataFrame:
@@ -182,7 +301,7 @@ def read_illumina(path: str | Path, locus_map: dict[tuple[str, int], str] | None
     with open(path, "r", encoding="utf-8", errors="replace") as handle:
         in_data = False
         idx: dict[str, int] | None = None
-        for line in handle:
+        for line_no, line in enumerate(handle, start=1):
             line = line.rstrip("\n").rstrip("\r")
             if not in_data:
                 if line.strip() == "[Data]":
@@ -200,19 +319,43 @@ def read_illumina(path: str | Path, locus_map: dict[tuple[str, int], str] | None
                 continue
             try:
                 probe_id = fields[idx["SNP Name"]].strip()
-                chrom = fields[idx["Chr"]].strip()
-                pos = int(fields[idx["Position"]].strip())
+                chrom = clean_chrom(fields[idx["Chr"]].strip())
+                pos_raw = fields[idx["Position"]].strip()
+                pos = int(pos_raw)
                 a1 = fields[idx["Allele1 - Plus"]]
                 a2 = fields[idx["Allele2 - Plus"]]
-            except (IndexError, ValueError):
+            except IndexError as exc:
+                emit_parse_warning(
+                    path,
+                    line_no,
+                    "MALFORMED_ILLUMINA_ROW",
+                    f"row has fewer columns than header: {exc}",
+                    line,
+                )
+                continue
+            except ValueError:
+                emit_parse_warning(
+                    path,
+                    line_no,
+                    "INVALID_POSITION",
+                    f"position is not an integer: {fields[idx['Position']].strip() if idx and 'Position' in idx and idx['Position'] < len(fields) else ''!r}",
+                    line,
+                )
                 continue
             if not chrom or chrom == "0" or pos <= 0:
+                continue
+            if not valid_chrom(chrom):
+                emit_parse_warning(path, line_no, "INVALID_CHROM", f"invalid chromosome: {chrom!r}", line)
                 continue
             rsid = extract_rsid(probe_id)
             variant_id = variant_id_for(rsid, chrom, pos, locus_map)
             if not rsid and variant_id.startswith("rs"):
                 rsid = variant_id
-            rows.append((variant_id, rsid, probe_id, chrom, pos, normalize_gt(a1, a2), np.nan, np.nan, np.nan))
+            gt = normalize_gt(a1, a2)
+            if not valid_gt(gt):
+                emit_parse_warning(path, line_no, "INVALID_GENOTYPE", f"invalid genotype: {gt!r}", line)
+                continue
+            rows.append((variant_id, rsid, probe_id, chrom, pos, gt, np.nan, np.nan, np.nan))
     df = pd.DataFrame(rows, columns=CANON)
     if df.empty:
         return df.astype({"variant_id": str, "rsid": str, "probe_id": str, "chrom": str})

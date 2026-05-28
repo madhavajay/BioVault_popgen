@@ -77,6 +77,10 @@ LOGS_DIR    = BASE / "logs"
 for _d in [PLOTS_DIR, RESULTS_DIR, LOGS_DIR]:
     _d.mkdir(parents=True, exist_ok=True)
 
+ERRORS_TSV = LOGS_DIR / "errors.tsv"
+WARNINGS_TSV = LOGS_DIR / "warnings.tsv"
+os.environ.setdefault("BIOVAULT_WARNINGS_TSV", str(WARNINGS_TSV))
+
 # ── Logging ────────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -87,6 +91,17 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger(__name__)
+
+
+def write_errors(rows: list[dict[str, str]]) -> None:
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    with open(ERRORS_TSV, "w", encoding="utf-8") as handle:
+        handle.write("participant_id\tfile\tseverity\tcode\tmessage\n")
+        for row in rows:
+            handle.write(
+                f"{row['participant_id']}\t{row['file']}\tERROR\t"
+                f"{row['code']}\t{row['message']}\n"
+            )
 
 # ── Plot style ─────────────────────────────────────────────────────────────────
 plt.rcParams.update({
@@ -124,27 +139,19 @@ NMF_MIN_CALL_RATE = 0.80
 def read_txt(path: Path) -> pd.DataFrame:
     """Read one GSA .txt file; return DataFrame with chrom/baf/lrr/is_het.
 
-    Illumina GSGT synthetic carries no BAF/LRR, so those come back NaN.
     Component/NMF paths use genotype signal, not BAF, so mixed DDNA/Illumina
     cohorts stay comparable."""
-    if _genoio.sniff_format(path) == "illumina":
+    try:
         g = _genoio.read_pipeline_genotypes(path)
         df = g.rename(columns={"gt": "genotype"})[
             ["rsid", "chrom", "pos", "genotype", "gs", "baf", "lrr"]]
-    else:
-        df = pd.read_csv(
-            path,
-            sep="\t",
-            comment="#",
-            header=None,
-            names=["rsid", "chrom", "pos", "genotype", "gs", "baf", "lrr"],
-            dtype={"chrom": str, "genotype": str},
-        )
+    except Exception as exc:
+        raise RuntimeError(f"failed to parse genotype file {path}: {exc}") from exc
     df["baf"] = pd.to_numeric(df["baf"], errors="coerce")
     df["lrr"] = pd.to_numeric(df["lrr"], errors="coerce")
     # Heterozygous = two different, non-missing alleles
     df["is_het"] = df["genotype"].apply(
-        lambda g: len(g) == 2 and g[0] != g[1] and "0" not in g
+        lambda g: isinstance(g, str) and len(g) == 2 and g[0] != g[1] and "0" not in g
     )
     return df
 
@@ -153,13 +160,30 @@ def load_all_samples(data_dir: Path) -> dict:
     """Return {sample_id: DataFrame} for all numeric-named subdirectories."""
     dirs = sorted(d for d in data_dir.iterdir() if d.is_dir() and d.name.isdigit())
     samples = {}
+    errors: list[dict[str, str]] = []
     for d in dirs:
         txt = list(d.glob("*.txt"))
         if not txt:
             log.warning(f"  No .txt file in {d}; skipping")
+            errors.append({
+                "participant_id": d.name,
+                "file": str(d),
+                "code": "NO_TXT_FILE",
+                "message": "sample directory contains no .txt genotype file",
+            })
             continue
         log.info(f"  Reading {d.name} …")
-        samples[d.name] = read_txt(txt[0])
+        try:
+            samples[d.name] = read_txt(txt[0])
+        except Exception as exc:
+            log.error(f"  Skipping {d.name}: {exc}")
+            errors.append({
+                "participant_id": d.name,
+                "file": str(txt[0]),
+                "code": "PARSE_FAILED",
+                "message": str(exc).replace("\t", " ").replace("\n", " "),
+            })
+    write_errors(errors)
     return samples
 
 

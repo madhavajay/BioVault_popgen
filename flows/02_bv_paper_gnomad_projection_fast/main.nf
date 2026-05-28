@@ -17,12 +17,20 @@ workflow USER {
         participants
 
     main:
-        def participantTuples = participants.map { record ->
-            tuple(record.participant_id.toString(), file(record.genotype_file))
+        def participantTuples = participants.flatMap { record ->
+            def validation = record.validation ?: [status: 'ok', message: '']
+            if (validation.status?.toString() != 'ok') {
+                println "[bv] WARNING: skipping participant ${record.participant_id}: genotype file ${validation.status} - ${validation.message}"
+                return []
+            }
+            return [tuple(record.participant_id.toString(), file(record.genotype_file))]
         }
         def collected = participantTuples
             .collect(flat: false)
             .map { items ->
+                if (items.isEmpty()) {
+                    throw new IllegalArgumentException("No valid genotype files remained after BioVault input validation")
+                }
                 tuple(
                     items.collect { it[0] },
                     items.collect { it[1] }
@@ -34,13 +42,16 @@ workflow USER {
         projection_tsv = projection.projection_tsv
         qc_report = projection.qc_report
         projection_plot = projection.projection_plot
+        errors = projection.errors
+        warnings = projection.warnings
 }
 
 process gnomad_projection_fast {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.2-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.3-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
-    errorStrategy 'terminate'
+    errorStrategy { params.nextflow.error_strategy }
+    maxRetries { params.nextflow.max_retries }
 
     input:
         tuple val(participant_ids), path(genotype_files)
@@ -49,6 +60,8 @@ process gnomad_projection_fast {
         path "study_pca_projection.tsv", emit: projection_tsv
         path "qc_report.txt",            emit: qc_report
         path "pca_projection.png",       emit: projection_plot, optional: true
+        path "errors.tsv",               emit: errors, optional: true
+        path "warnings.tsv",             emit: warnings, optional: true
 
     script:
     def staging = []

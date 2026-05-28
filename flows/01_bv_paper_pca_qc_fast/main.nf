@@ -13,17 +13,28 @@ workflow USER {
         participants
 
     main:
-        def participantTuples = participants.map { record ->
-            tuple(
+        def participantTuples = participants.flatMap { record ->
+            def validation = record.validation ?: [status: 'ok', message: '']
+            if (validation.status?.toString() != 'ok') {
+                println "[bv] WARNING: skipping participant ${record.participant_id}: genotype file ${validation.status} - ${validation.message}"
+                return []
+            }
+            def facets = record.facets ?: [:]
+            def country = (record.country ?: facets.country ?: '(unset)').toString().trim() ?: '(unset)'
+            def sex = (record.sex ?: facets.sex ?: '(unset)').toString().trim() ?: '(unset)'
+            return [tuple(
                 record.participant_id.toString(),
                 file(record.genotype_file),
-                (record.country?.toString()?.trim() ?: '(unset)'),
-                (record.sex?.toString()?.trim() ?: '(unset)')
-            )
+                country,
+                sex
+            )]
         }
         def collected = participantTuples
             .collect(flat: false)
             .map { items ->
+                if (items.isEmpty()) {
+                    throw new IllegalArgumentException("No valid genotype files remained after BioVault input validation")
+                }
                 // Aggregate-only facet proof (counts, never participant IDs).
                 // Best-effort: no required_facets, so pca_qc still runs on a
                 // bare samplesheet — facets show '(unset)' until the loader
@@ -49,10 +60,12 @@ workflow USER {
         pca_pc12_plot = qc.pca_pc12_plot
         pca_pc34_plot = qc.pca_pc34_plot
         pipeline_log = qc.pipeline_log
+        errors = qc.errors
+        warnings = qc.warnings
 }
 
 process pca_qc_fast {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.2-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.3-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy { params.nextflow.error_strategy }
@@ -68,6 +81,8 @@ process pca_qc_fast {
         path "pca_pc1_pc2.png",  emit: pca_pc12_plot, optional: true
         path "pca_pc3_pc4.png",  emit: pca_pc34_plot, optional: true
         path "fast_pipeline.log", emit: pipeline_log, optional: true
+        path "errors.tsv",       emit: errors, optional: true
+        path "warnings.tsv",     emit: warnings, optional: true
 
     script:
     def staging = []
@@ -114,5 +129,7 @@ process pca_qc_fast {
     [ -f pca_qc_fast/plots/pca_pc1_pc2.png ] && cp pca_qc_fast/plots/pca_pc1_pc2.png pca_pc1_pc2.png || true
     [ -f pca_qc_fast/plots/pca_pc3_pc4.png ] && cp pca_qc_fast/plots/pca_pc3_pc4.png pca_pc3_pc4.png || true
     [ -f pca_qc_fast/logs/fast_pipeline.log ] && cp pca_qc_fast/logs/fast_pipeline.log fast_pipeline.log || true
+    [ -f pca_qc_fast/logs/errors.tsv ] && cp pca_qc_fast/logs/errors.tsv errors.tsv || true
+    [ -f pca_qc_fast/logs/warnings.tsv ] && cp pca_qc_fast/logs/warnings.tsv warnings.tsv || true
     """
 }

@@ -1,0 +1,25 @@
+apiVersion: syftbox.openmined.org/v1alpha1
+kind: Flow
+metadata:
+  name: 00_bv_paper_qc_all_files
+  version: 0.1.3
+spec:
+  inputs:
+    samplesheet:
+      type: List[GenotypeRecord]
+  steps:
+    - id: qc_all_files
+      uses: ./
+      with:
+        participants: inputs.samplesheet
+      publish:
+        file_summary: File(file_summary.tsv)
+        issues: File(issues.tsv)
+        errors: File(errors.tsv)
+        warnings: File(warnings.tsv)
+        quality_issues: File(quality_issues.tsv)
+        summary_json: File(summary.json)
+        report: File(report.txt)
+        facet_values: File(facet_values.tsv)
+        facet_summary: File(facet_summary.tsv)
+        pipeline_log: File(qc_all_files.log)

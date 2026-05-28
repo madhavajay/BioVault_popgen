@@ -72,6 +72,8 @@ export LOADINGS_NPZ
 log "STEP 1: DDNA -> PLINK bed/bim/fam (vectorized, no tped intermediary)"
 python3 "${SCRIPT_DIR}/fast_convert_ddna_to_plink.py" \
     "${DATA_DIR}" "${WORKING}/study_raw" --min-gs "${MIN_GS}" --workers "${THREADS}"
+[ -f "${WORKING}/errors.tsv" ] && cp "${WORKING}/errors.tsv" "${OUT_DIR}/errors.tsv"
+[ -f "${WORKING}/warnings.tsv" ] && cp "${WORKING}/warnings.tsv" "${OUT_DIR}/warnings.tsv"
 
 log "STEP 2: QC"
 plink2 --bfile "${WORKING}/study_raw" --rm-dup exclude-all \

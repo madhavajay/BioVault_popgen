@@ -32,6 +32,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import csv
 import glob
 import multiprocessing as mp
 import os
@@ -116,13 +117,16 @@ def _worker_init(rsid_to_idx, min_gs):
 
 def _worker_process(args):
     i, path = args
-    rsid, _chrom, _pos, gt = read_ddna_fast(path, _MIN_GS)
+    try:
+        rsid, _chrom, _pos, gt = read_ddna_fast(path, _MIN_GS)
+    except Exception as exc:
+        return i, None, None, None, f"failed to parse genotype file {path}: {exc}"
     # Map rsid -> reference index; dropna -> kept rows.
     # Use Series.map for vectorized dict lookup.
     idx_series = pd.Series(rsid).map(_REF_RSID_TO_IDX)
     valid = idx_series.notna().to_numpy()
     if not valid.any():
-        return i, np.empty(0, dtype=np.int64), np.empty(0, dtype=np.uint8), np.empty(0, dtype=np.uint8)
+        return i, np.empty(0, dtype=np.int64), np.empty(0, dtype=np.uint8), np.empty(0, dtype=np.uint8), None
     ix = idx_series[valid].to_numpy(dtype=np.int64)
     gt_view = gt[valid].view("S1").reshape(-1, 2)
     # Encode allele bytes to 1..4. Use cumulative mask trick — faster than dict.
@@ -145,7 +149,21 @@ def _worker_process(args):
         ix = ix[first_idx]
         a1_codes = a1_codes[first_idx]
         a2_codes = a2_codes[first_idx]
-    return i, ix, a1_codes, a2_codes
+    return i, ix, a1_codes, a2_codes, None
+
+
+def _write_errors(path: str, rows: list[dict[str, str]]) -> None:
+    with open(path, "w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(["participant_id", "file", "severity", "code", "message"])
+        for row in rows:
+            writer.writerow([
+                row["participant_id"],
+                row["file"],
+                "ERROR",
+                row["code"],
+                row["message"],
+            ])
 
 
 def main():
@@ -157,6 +175,11 @@ def main():
     ap.add_argument("--workers", type=int,
                     default=max(1, (os.cpu_count() or 4)))
     args = ap.parse_args()
+    out_dir = os.path.dirname(os.path.abspath(args.out_prefix)) or "."
+    os.makedirs(out_dir, exist_ok=True)
+    errors_tsv = os.path.join(out_dir, "errors.tsv")
+    warnings_tsv = os.path.join(out_dir, "warnings.tsv")
+    os.environ.setdefault("BIOVAULT_WARNINGS_TSV", warnings_tsv)
 
     sample_dirs = sorted(
         d for d in glob.glob(os.path.join(args.data_dir, "*"))
@@ -164,21 +187,57 @@ def main():
     )
     if not sample_dirs:
         sys.exit(f"ERROR: no sample dirs in {args.data_dir}")
-    n_samples = len(sample_dirs)
-    sample_ids = [os.path.basename(d) for d in sample_dirs]
-    print(f"Found {n_samples} samples")
+    errors: list[dict[str, str]] = []
 
-    def txt_for(d: str) -> str:
+    def txt_for(d: str) -> str | None:
         txts = glob.glob(os.path.join(d, "*.txt"))
         if not txts:
-            raise FileNotFoundError(f"no .txt in {d}")
+            errors.append({
+                "participant_id": os.path.basename(d),
+                "file": d,
+                "code": "NO_TXT_FILE",
+                "message": "sample directory contains no .txt genotype file",
+            })
+            return None
         return txts[0]
+
+    sample_paths: list[tuple[str, str]] = []
+    for d in sample_dirs:
+        txt = txt_for(d)
+        if txt:
+            sample_paths.append((os.path.basename(d), txt))
+    if not sample_paths:
+        _write_errors(errors_tsv, errors)
+        sys.exit("ERROR: no sample dirs with .txt genotype files")
 
     # --- Build SNP reference from first sample ----------------------------
     t0 = time.time()
-    first_path = txt_for(sample_dirs[0])
+    first_path = None
+    for sample_id, candidate in sample_paths:
+        try:
+            rsid0, chrom0, pos0, gt0 = read_ddna_fast(candidate, args.min_gs)
+        except Exception as exc:
+            errors.append({
+                "participant_id": sample_id,
+                "file": candidate,
+                "code": "PARSE_FAILED",
+                "message": f"failed while selecting reference SNP set: {exc}",
+            })
+            continue
+        if rsid0.size == 0:
+            errors.append({
+                "participant_id": sample_id,
+                "file": candidate,
+                "code": "NO_USABLE_VARIANTS",
+                "message": "file produced no usable autosomal SNPs for reference SNP set",
+            })
+            continue
+        first_path = candidate
+        break
+    if first_path is None:
+        _write_errors(errors_tsv, errors)
+        sys.exit("ERROR: no genotype file produced a usable reference SNP set")
     print(f"Building SNP reference from: {os.path.basename(first_path)}")
-    rsid0, chrom0, pos0, gt0 = read_ddna_fast(first_path, args.min_gs)
 
     # Dedup by (chrom, pos), keep first.
     n_before_dedup = rsid0.size
@@ -208,25 +267,63 @@ def main():
     print(f"Reference SNP set: {n_snps:,} autosomal SNPs ({time.time()-t0:.2f}s)")
 
     # --- Read all samples in parallel -------------------------------------
+    sample_paths = [
+        (sid, path)
+        for sid, path in sample_paths
+        if path not in {row["file"] for row in errors if row["code"] in {"PARSE_FAILED", "NO_USABLE_VARIANTS"}}
+    ]
+    n_samples = len(sample_paths)
+    sample_ids = [sid for sid, _path in sample_paths]
+    print(f"Found {n_samples} usable sample paths")
+
     A1i = np.zeros((n_samples, n_snps), dtype=np.uint8)
     A2i = np.zeros((n_samples, n_snps), dtype=np.uint8)
 
     t0 = time.time()
-    work = list(enumerate([txt_for(d) for d in sample_dirs]))
+    work = list(enumerate([path for _sid, path in sample_paths]))
     if args.workers > 1 and n_samples > 1:
         ctx = mp.get_context("fork")
         with ctx.Pool(min(args.workers, n_samples),
                       initializer=_worker_init,
                       initargs=(rsid_to_idx, args.min_gs)) as pool:
-            for i, ix, a1c, a2c in pool.imap_unordered(_worker_process, work, chunksize=1):
+            for i, ix, a1c, a2c, err in pool.imap_unordered(_worker_process, work, chunksize=1):
+                if err:
+                    errors.append({
+                        "participant_id": sample_ids[i],
+                        "file": sample_paths[i][1],
+                        "code": "PARSE_FAILED",
+                        "message": err,
+                    })
+                    continue
                 A1i[i, ix] = a1c
                 A2i[i, ix] = a2c
     else:
         _worker_init(rsid_to_idx, args.min_gs)
         for w in work:
-            i, ix, a1c, a2c = _worker_process(w)
+            i, ix, a1c, a2c, err = _worker_process(w)
+            if err:
+                errors.append({
+                    "participant_id": sample_ids[i],
+                    "file": sample_paths[i][1],
+                    "code": "PARSE_FAILED",
+                    "message": err,
+                })
+                continue
             A1i[i, ix] = a1c
             A2i[i, ix] = a2c
+    failed_indices = {
+        idx for idx, (_sid, path) in enumerate(sample_paths)
+        if any(row["file"] == path and row["code"] == "PARSE_FAILED" for row in errors)
+    }
+    if failed_indices:
+        keep_sample = [idx for idx in range(n_samples) if idx not in failed_indices]
+        A1i = A1i[keep_sample, :]
+        A2i = A2i[keep_sample, :]
+        sample_ids = [sample_ids[idx] for idx in keep_sample]
+        n_samples = len(sample_ids)
+    _write_errors(errors_tsv, errors)
+    if n_samples == 0:
+        sys.exit("ERROR: no genotype files could be parsed; see errors.tsv")
     print(f"Read {n_samples} samples in {time.time()-t0:.2f}s")
 
     # --- Per-variant allele counts, biallelic filter -----------------------

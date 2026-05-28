@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import matplotlib
@@ -49,6 +49,8 @@ PCA_DIR = BASE_DIR / "data" / "pca"
 PLOTS_DIR = BASE_DIR / "plots"
 LOG_DIR = BASE_DIR / "logs"
 QC_DIR = BASE_DIR / "data" / "qc"
+ERRORS_TSV = LOG_DIR / "errors.tsv"
+WARNINGS_TSV = LOG_DIR / "warnings.tsv"
 
 COLS = ["rsid", "chromosome", "position", "genotype", "gs", "baf", "lrr"]
 VALID_BASES = np.array([b"A", b"C", b"G", b"T"], dtype="S1")
@@ -77,6 +79,18 @@ def setup_logging() -> logging.Logger:
 
 
 log = setup_logging()
+os.environ.setdefault("BIOVAULT_WARNINGS_TSV", str(WARNINGS_TSV))
+
+
+def write_errors(rows: list[dict[str, str]]) -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    with open(ERRORS_TSV, "w", encoding="utf-8") as handle:
+        handle.write("participant_id\tfile\tseverity\tcode\tmessage\n")
+        for row in rows:
+            handle.write(
+                f"{row['participant_id']}\t{row['file']}\tERROR\t"
+                f"{row['code']}\t{row['message']}\n"
+            )
 
 
 def timed(label: str):
@@ -109,21 +123,13 @@ def discover_samples() -> list[tuple[str, Path]]:
 
 def read_sample(task: tuple[str, Path]) -> tuple[str, pd.DataFrame]:
     sample_id, path = task
-    if _genoio.sniff_format(path) == "illumina":
+    try:
         g = _genoio.read_pipeline_genotypes(path)
         df = g[["rsid", "chrom", "pos", "gt"]].rename(columns={
             "chrom": "chromosome", "pos": "position", "gt": "genotype"})
         df["position"] = df["position"].astype(np.int64)
-    else:
-        df = pd.read_csv(
-            path,
-            sep="\t",
-            comment="#",
-            header=None,
-            names=COLS,
-            usecols=["rsid", "chromosome", "position", "genotype"],
-            dtype={"rsid": str, "chromosome": str, "position": np.int64, "genotype": str},
-        )
+    except Exception as exc:
+        raise RuntimeError(f"{sample_id}: failed to parse genotype file {path}: {exc}") from exc
     df = df.dropna(subset=["rsid", "genotype"])
     df["genotype"] = df["genotype"].str.upper().str.strip()
     return sample_id, df
@@ -131,12 +137,41 @@ def read_sample(task: tuple[str, Path]) -> tuple[str, pd.DataFrame]:
 
 def load_and_merge(samples: list[tuple[str, Path]]) -> tuple[pd.DataFrame, pd.DataFrame]:
     workers = min(len(samples), os.cpu_count() or 1)
+    errors: list[dict[str, str]] = []
     with timed(f"Reading {len(samples)} samples with {workers} workers"):
         if workers > 1:
             with ThreadPoolExecutor(max_workers=workers) as pool:
-                loaded = list(pool.map(read_sample, samples))
+                futures = {pool.submit(read_sample, sample): sample for sample in samples}
+                loaded = []
+                for future in as_completed(futures):
+                    sample_id, path = futures[future]
+                    try:
+                        loaded.append(future.result())
+                    except Exception as exc:
+                        log.error("Skipping %s: %s", sample_id, exc)
+                        errors.append({
+                            "participant_id": sample_id,
+                            "file": str(path),
+                            "code": "PARSE_FAILED",
+                            "message": str(exc).replace("\t", " ").replace("\n", " "),
+                        })
         else:
-            loaded = [read_sample(s) for s in samples]
+            loaded = []
+            for sample in samples:
+                sample_id, path = sample
+                try:
+                    loaded.append(read_sample(sample))
+                except Exception as exc:
+                    log.error("Skipping %s: %s", sample_id, exc)
+                    errors.append({
+                        "participant_id": sample_id,
+                        "file": str(path),
+                        "code": "PARSE_FAILED",
+                        "message": str(exc).replace("\t", " ").replace("\n", " "),
+                    })
+    write_errors(errors)
+    if not loaded:
+        raise RuntimeError("No genotype files could be parsed; see errors.tsv")
 
     loaded.sort(key=lambda item: item[0])
     snp_info = (

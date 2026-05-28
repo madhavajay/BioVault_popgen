@@ -47,7 +47,9 @@ flows/*/assets/
 
 # Pipeline outputs
 results/
+00_qc_test_data/
 01_mock_data_generation/output/
+01_mock_data_generation/facets/
 01_mock_data_generation/scripts/out/
 03_individual_level/*/data/
 03_individual_level/*/logs/

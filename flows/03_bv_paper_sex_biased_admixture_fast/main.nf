@@ -26,21 +26,27 @@ workflow USER {
         participants
 
     main:
-        def records = participants.map { record ->
-            def sex = normalizeSex(record.sex?.toString())
-            if (!sex) {
-                throw new IllegalArgumentException(
-                    "Participant ${record.participant_id} has an empty 'sex' " +
-                    "facet. The flow declares required_facets: [sex]; the " +
-                    "samplesheet should have been rejected upstream."
-                )
+        def records = participants.flatMap { record ->
+            def validation = record.validation ?: [status: 'ok', message: '']
+            if (validation.status?.toString() != 'ok') {
+                println "[bv] WARNING: skipping participant ${record.participant_id}: genotype file ${validation.status} - ${validation.message}"
+                return []
             }
-            tuple(record.participant_id.toString(), sex, file(record.genotype_file))
+            def facets = record.facets ?: [:]
+            def sex = normalizeSex((record.sex ?: facets.sex)?.toString())
+            if (!sex) {
+                println "[bv] WARNING: skipping participant ${record.participant_id}: missing required sex facet"
+                return []
+            }
+            return [tuple(record.participant_id.toString(), sex, file(record.genotype_file))]
         }
 
         def collected = records
             .collect(flat: false)
             .map { items ->
+                if (items.isEmpty()) {
+                    throw new IllegalArgumentException("No valid participants with readable genotype files and sex facet remained")
+                }
                 tuple(
                     items.collect { it[0] },
                     items.collect { it[1] },
@@ -57,10 +63,12 @@ workflow USER {
         sex_bias_plot     = result.sex_bias_plot
         sex_bias_plot_pdf = result.sex_bias_plot_pdf
         pipeline_log      = result.pipeline_log
+        errors            = result.errors
+        warnings          = result.warnings
 }
 
 process sex_biased_admixture_fast {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.2-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.3-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy { params.nextflow.error_strategy }
@@ -76,6 +84,8 @@ process sex_biased_admixture_fast {
         path "figure4_sex_biased_admixture.png",    emit: sex_bias_plot, optional: true
         path "figure4_sex_biased_admixture.pdf",    emit: sex_bias_plot_pdf, optional: true
         path "sex_biased_admixture.log",            emit: pipeline_log, optional: true
+        path "errors.tsv",                          emit: errors, optional: true
+        path "warnings.tsv",                        emit: warnings, optional: true
 
     script:
     def staging = []
@@ -136,5 +146,7 @@ process sex_biased_admixture_fast {
     elif [ -f sex_biased_admixture/logs/sex_biased_admixture.log ]; then
         cp sex_biased_admixture/logs/sex_biased_admixture.log sex_biased_admixture.log
     fi
+    [ -f sex_biased_admixture_fast/logs/errors.tsv ] && cp sex_biased_admixture_fast/logs/errors.tsv errors.tsv || true
+    [ -f sex_biased_admixture_fast/logs/warnings.tsv ] && cp sex_biased_admixture_fast/logs/warnings.tsv warnings.tsv || true
     """
 }

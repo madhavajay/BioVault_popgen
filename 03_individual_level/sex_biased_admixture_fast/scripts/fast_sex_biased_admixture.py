@@ -44,8 +44,11 @@ _BASE = Path(__file__).resolve().parents[1]
 sba.RESULTS_DIR = _BASE / "results"
 sba.PLOTS_DIR = _BASE / "plots"
 sba.LOGS_DIR = _BASE / "logs"
+sba.ERRORS_TSV = sba.LOGS_DIR / "errors.tsv"
+sba.WARNINGS_TSV = sba.LOGS_DIR / "warnings.tsv"
 for _d in (sba.RESULTS_DIR, sba.PLOTS_DIR, sba.LOGS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("BIOVAULT_WARNINGS_TSV", str(sba.WARNINGS_TSV))
 
 # Honor BIOVAULT_DATA_DIR so the step runner / flow can point at a sample
 # subset (mirrors pca_qc_fast). assign_sex already reads BIOVAULT_SEX_MAPPING
@@ -59,29 +62,59 @@ log = sba.log
 
 def _read_one(args):
     sid, txt = args
-    return sid, sba.read_txt(txt)
+    try:
+        return sid, sba.read_txt(txt), None
+    except Exception as exc:
+        return sid, None, str(exc).replace("\t", " ").replace("\n", " ")
 
 
 def load_all_samples_parallel(data_dir: Path, workers: int) -> dict:
     dirs = sorted(d for d in data_dir.iterdir()
                   if d.is_dir() and d.name.isdigit())
     tasks = []
+    errors: list[dict[str, str]] = []
     for d in dirs:
         txts = list(d.glob("*.txt"))
         if not txts:
             log.warning(f"  No .txt file in {d}; skipping")
+            errors.append({
+                "participant_id": d.name,
+                "file": str(d),
+                "code": "NO_TXT_FILE",
+                "message": "sample directory contains no .txt genotype file",
+            })
             continue
         tasks.append((d.name, txts[0]))
     out: dict = {}
     if workers > 1 and len(tasks) > 1:
         ctx = mp.get_context("fork")
         with ctx.Pool(min(workers, len(tasks))) as pool:
-            for sid, df in pool.imap_unordered(_read_one, tasks, chunksize=1):
-                out[sid] = df
+            for sid, df, err in pool.imap_unordered(_read_one, tasks, chunksize=1):
+                if err:
+                    path = dict(tasks).get(sid, "")
+                    log.error(f"  Skipping {sid}: {err}")
+                    errors.append({
+                        "participant_id": sid,
+                        "file": str(path),
+                        "code": "PARSE_FAILED",
+                        "message": err,
+                    })
+                else:
+                    out[sid] = df
     else:
         for t in tasks:
-            sid, df = _read_one(t)
-            out[sid] = df
+            sid, df, err = _read_one(t)
+            if err:
+                log.error(f"  Skipping {sid}: {err}")
+                errors.append({
+                    "participant_id": sid,
+                    "file": str(t[1]),
+                    "code": "PARSE_FAILED",
+                    "message": err,
+                })
+            else:
+                out[sid] = df
+    sba.write_errors(errors)
     return out
 
 
