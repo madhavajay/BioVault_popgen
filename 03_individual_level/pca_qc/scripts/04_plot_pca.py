@@ -119,7 +119,7 @@ def scatter_pca(df, pc_x, pc_y, var_exp, colors, handles, out_path):
 
     ax.set_xlabel(x_label, fontsize=12)
     ax.set_ylabel(y_label, fontsize=12)
-    ax.set_title("Ancestry PCA — Mock Synthetic Data", fontsize=13, fontweight="bold")
+    ax.set_title("Ancestry PCA", fontsize=13, fontweight="bold")
     ax.legend(handles=handles, title="Sample", fontsize=8,
               loc="best", framealpha=0.7)
     ax.axhline(0, color="lightgray", linewidth=0.8, linestyle="--")

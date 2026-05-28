@@ -64,7 +64,7 @@ export COUNT SEED MIN_PER_ISLAND
 bash "${GENERATE_SCRIPT}"
 
 echo
-echo "=== mock data ready ==="
+echo "=== genotype data ready ==="
 echo "  participants:    $(find "${OUTPUT_DIR}" -maxdepth 1 -mindepth 1 -type d -name '[0-9]*' | wc -l | tr -d ' ')"
 echo "  island mapping:  ${OUTPUT_DIR}/island_mapping.tsv"
 if [ -f "${OUTPUT_DIR}/island_mapping.tsv" ]; then

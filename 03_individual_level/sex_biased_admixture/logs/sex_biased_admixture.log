@@ -1,7 +1,7 @@
-2026-05-18 18:45:05,805  INFO  === Sex-biased admixture v2 — mock-data-driven ===
+2026-05-18 18:45:05,805  INFO  === Sex-biased admixture v2 ===
 2026-05-18 18:45:05,805  INFO  Data dir : /Users/spectremac/Desktop/01_mock_data_generation/output
 2026-05-18 18:45:05,806  ERROR  Data directory not found: /Users/spectremac/Desktop/01_mock_data_generation/output
-2026-05-18 18:45:23,296  INFO  === Sex-biased admixture v2 — mock-data-driven ===
+2026-05-18 18:45:23,296  INFO  === Sex-biased admixture v2 ===
 2026-05-18 18:45:23,297  INFO  Data dir : /Users/spectremac/Desktop/BioVault_popgen/01_mock_data_generation/output
 2026-05-18 18:45:23,297  INFO  Loading genotype files …
 2026-05-18 18:45:23,297  INFO    Reading 305387 …
@@ -209,7 +209,7 @@ sample_id sex  auto_het  x_het  auto_c1   x_c1  x_minus_auto_c1
 2026-05-18 18:45:35,097  INFO  Saved PDF → /Users/spectremac/Desktop/BioVault_popgen/03_individual_level/sex_biased_admixture/plots/figure4_sex_biased_admixture.pdf
 2026-05-18 18:45:35,098  INFO  Saved PNG → /Users/spectremac/Desktop/BioVault_popgen/03_individual_level/sex_biased_admixture/plots/figure4_sex_biased_admixture.png
 2026-05-18 18:45:35,098  INFO  Done.
-2026-05-18 18:46:04,309  INFO  === Sex-biased admixture v2 — mock-data-driven ===
+2026-05-18 18:46:04,309  INFO  === Sex-biased admixture v2 ===
 2026-05-18 18:46:04,309  INFO  Data dir : /Users/spectremac/Desktop/BioVault_popgen/01_mock_data_generation/output
 2026-05-18 18:46:04,309  INFO  Loading genotype files …
 2026-05-18 18:46:04,309  INFO    Reading 305387 …

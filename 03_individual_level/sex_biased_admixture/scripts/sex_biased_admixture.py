@@ -629,7 +629,7 @@ def plot_figure(df: pd.DataFrame):
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
-    log.info("=== Sex-biased admixture v2 — mock-data-driven ===")
+    log.info("=== Sex-biased admixture v2 ===")
     log.info(f"Data dir : {DATA_DIR}")
 
     if not DATA_DIR.exists():
