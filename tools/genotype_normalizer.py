@@ -244,30 +244,77 @@ def variant_id_for(rsid: str, chrom: str, pos: int, locus_map: dict[tuple[str, i
     return f"{chrom}:{int(pos)}"
 
 
+# --- Vectorized helpers -------------------------------------------------------
+# Equivalent to the scalar helpers above, but operate on whole pandas Series.
+# Every op is NaN/coerce/`na=False`-safe so malformed cells cannot raise; any
+# case these cannot express is handled by the robust readers that wrap them.
+_VALID_CHROM_SET = {str(i) for i in range(1, 23)} | {"X", "Y", "M", "MT", "XY"}
+_NO_CALLS_UPPER = {value.upper() for value in NO_CALLS}
+_INDEL_GT = {"--", "II", "ID", "DI", "DD"}
+_VENDOR_MISSING = set(VENDOR_MISSING_VALUES)
+
+
+def _vec_clean_chrom(s: pd.Series) -> pd.Series:
+    out = s.astype(str).str.strip()
+    out = out.str.replace(r"^[Cc][Hh][Rr]", "", regex=True)
+    return out.str.upper()
+
+
+def _vec_canonical_rsid(s: pd.Series) -> pd.Series:
+    v = s.astype(str).str.strip()
+    has_rs = v.str.lower().str.startswith("rs")
+    out = v.where(has_rs, "rs" + v)
+    return out.mask(v.isin(["", ".", "-"]), "")
+
+
+def _vec_normalize_gt_single(s: pd.Series) -> pd.Series:
+    g = s.astype(str).str.strip().str.upper()
+    nocall = g.isin(_NO_CALLS_UPPER) | g.str.fullmatch(r"[-.N0]+", na=False)
+    return g.mask(nocall, "--")
+
+
+def _vec_normalize_gt_pair(a1: pd.Series, a2: pd.Series) -> pd.Series:
+    x = a1.astype(str).str.strip().str.upper()
+    y = a2.astype(str).str.strip().str.upper()
+    nocall = x.isin(_NO_CALLS_UPPER) | y.isin(_NO_CALLS_UPPER)
+    return (x + y).mask(nocall, "--")
+
+
+def _vec_valid_gt(s: pd.Series) -> pd.Series:
+    g = s.astype(str).str.strip().str.upper()
+    return g.isin(_INDEL_GT) | g.str.fullmatch(r"[ACGT]{2}", na=False)
+
+
+def _vec_extract_rsid(s: pd.Series) -> pd.Series:
+    digits = s.astype(str).str.extract(r"[Rr][Ss](\d+)", expand=False)
+    return ("rs" + digits).where(digits.notna(), "")
+
+
 def finalize_ddna_frame(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=CANON)
     df = df.copy()
     df["rsid"] = df["rsid"].astype(str).str.strip().str.lstrip("\ufeff")
     df = df[(df["rsid"] != "") & (df["rsid"].str.lower() != "rsid")].copy()
-    df = df[~df["gt"].astype(str).str.strip().map(is_vendor_missing_value)].copy()
-    df["rsid"] = df["rsid"].map(canonical_rsid)
-    df["chrom"] = df["chrom"].map(clean_chrom)
+    gt_stripped = df["gt"].astype(str).str.strip()
+    df = df[~gt_stripped.isin(_VENDOR_MISSING)].copy()
+    df["rsid"] = _vec_canonical_rsid(df["rsid"])
+    df["chrom"] = _vec_clean_chrom(df["chrom"])
     df["probe_id"] = df["rsid"]
     df["pos"] = pd.to_numeric(df["pos"], errors="coerce")
     df = df[df["pos"].notna() & (df["pos"] > 0)].copy()
     df["pos"] = df["pos"].astype("Int64")
-    df["variant_id"] = [
-        rsid if rsid else (f"{chrom}:{int(pos)}" if pd.notna(pos) else "")
-        for rsid, chrom, pos in zip(df["rsid"], df["chrom"], df["pos"])
-    ]
+    df["variant_id"] = df["rsid"].where(
+        df["rsid"] != "",
+        df["chrom"].astype(str) + ":" + df["pos"].astype("int64").astype(str),
+    )
     for col in ("gs", "baf", "lrr"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    df["gt"] = df["gt"].map(normalize_gt)
+    df["gt"] = _vec_normalize_gt_single(df["gt"])
     df = df[
         (df["variant_id"] != "")
-        & df["chrom"].map(valid_chrom)
-        & df["gt"].map(valid_gt)
+        & df["chrom"].isin(_VALID_CHROM_SET)
+        & _vec_valid_gt(df["gt"])
     ].copy()
     return df[CANON].reset_index(drop=True)
 
@@ -351,6 +398,100 @@ def read_ddna(path: str | Path) -> pd.DataFrame:
 
 
 def read_illumina(path: str | Path, locus_map: dict[tuple[str, int], str] | None = None) -> pd.DataFrame:
+    """Vectorized fast read for clean, no-locus-map files; otherwise defer to the
+    robust per-row reader so row-level warnings stay exact."""
+    locus_map = locus_map or {}
+    try:
+        result = _read_illumina_fast(path, locus_map)
+    except Exception:
+        result = None
+    if result is not None:
+        return result
+    return _read_illumina_robust(path, locus_map)
+
+
+def _read_illumina_fast(path: str | Path, locus_map: dict[tuple[str, int], str]):
+    # Only the no-locus-map, structurally clean, warning-free case is handled
+    # here. Return None for anything that needs the robust reader's per-row
+    # diagnostics, so the dispatcher falls back and output stays identical.
+    if locus_map:
+        return None
+    data_idx = None
+    header_idx = None
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        for i, line in enumerate(handle):
+            if data_idx is None:
+                if line.strip() == "[Data]":
+                    data_idx = i
+                continue
+            if line.strip():
+                header_idx = i
+                break
+    if data_idx is None or header_idx is None:
+        return None
+    try:
+        frame = pd.read_csv(
+            path,
+            sep="\t",
+            dtype=str,
+            na_filter=False,
+            engine="c",
+            skiprows=header_idx,
+            header=0,
+            on_bad_lines="error",
+            skip_blank_lines=True,
+        )
+    except Exception:
+        return None
+    required = ["SNP Name", "Chr", "Position", "Allele1 - Plus", "Allele2 - Plus"]
+    if any(col not in frame.columns for col in required):
+        return None
+    if frame.empty:
+        return pd.DataFrame(columns=CANON).astype(
+            {"variant_id": str, "rsid": str, "probe_id": str, "chrom": str}
+        )
+    chrom = _vec_clean_chrom(frame["Chr"])
+    pos_str = frame["Position"].astype(str).str.strip()
+    if not bool(pos_str.str.fullmatch(r"[+-]?\d+", na=False).all()):
+        return None  # non-integer position -> robust emits INVALID_POSITION
+    pos = pos_str.astype("int64")
+    unmapped = chrom.isin(["", "0"]) | (pos <= 0)
+    chrom_valid = chrom.isin(_VALID_CHROM_SET)
+    if bool((~unmapped & ~chrom_valid).any()):
+        return None  # robust emits INVALID_CHROM
+    gt = _vec_normalize_gt_pair(frame["Allele1 - Plus"], frame["Allele2 - Plus"])
+    if bool((~unmapped & chrom_valid & ~_vec_valid_gt(gt)).any()):
+        return None  # robust emits INVALID_GENOTYPE
+    keep = (~unmapped).to_numpy()
+    n_keep = int(keep.sum())
+    probe = frame["SNP Name"].astype(str).str.strip()
+    rsid = _vec_extract_rsid(probe)
+    variant_id = rsid.where(rsid != "", chrom + ":" + pos.astype(str))
+    # gs/baf/lrr are always missing for Illumina; build them as float64 (not
+    # object) so the frame is dtype-identical to the robust reader.
+    nan_col = np.full(n_keep, np.nan, dtype="float64")
+    out = pd.DataFrame(
+        {
+            "variant_id": variant_id.to_numpy()[keep],
+            "rsid": rsid.to_numpy()[keep],
+            "probe_id": probe.to_numpy()[keep],
+            "chrom": chrom.to_numpy()[keep],
+            "pos": pos.to_numpy()[keep],
+            "gt": gt.to_numpy()[keep],
+            "gs": nan_col,
+            "baf": nan_col.copy(),
+            "lrr": nan_col.copy(),
+        },
+        columns=CANON,
+    )
+    if out.empty:
+        return out.astype(
+            {"variant_id": str, "rsid": str, "probe_id": str, "chrom": str}
+        )
+    return merge_duplicate_probes(out)
+
+
+def _read_illumina_robust(path: str | Path, locus_map: dict[tuple[str, int], str] | None = None) -> pd.DataFrame:
     locus_map = locus_map or {}
     rows: list[tuple[str, str, str, str, int, str, float, float, float]] = []
     with open(path, "r", encoding="utf-8", errors="replace") as handle:

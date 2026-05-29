@@ -47,10 +47,10 @@ workflow USER {
 }
 
 process gnomad_projection_fast {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.6-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.7-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
-    errorStrategy { params.nextflow.error_strategy }
+    errorStrategy 'terminate'
     maxRetries { params.nextflow.max_retries }
 
     input:

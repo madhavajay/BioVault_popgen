@@ -27,6 +27,22 @@ def qcBatchSize() {
     return size > 0 ? size : 50
 }
 
+def qcProgressEvery() {
+    def raw = params.qc_progress_every ?: 50
+    def size = raw as int
+    return size > 0 ? size : 50
+}
+
+def qcWorkers() {
+    // Per-batch parallel workers inside qc_all_files.py. Default 1 so it does
+    // not oversubscribe cores against Nextflow's batch-level parallelism; the
+    // vectorized normalizer already speeds each file. Raise via params.qc_workers
+    // when running few/large batches.
+    def raw = params.qc_workers ?: 1
+    def size = raw as int
+    return size > 0 ? size : 1
+}
+
 workflow USER {
     take:
         context
@@ -72,8 +88,12 @@ workflow USER {
             }
             .collect(flat: false)
             .flatMap { items ->
-                items.collate(qcBatchSize()).collect { batch ->
+                def batches = items.collate(qcBatchSize())
+                println "[bv] qc_all_files batches: ${batches.size()} (batch_size=${qcBatchSize()}, progress_every=${qcProgressEvery()})"
+                batches.withIndex().collect { batch, idx ->
                     tuple(
+                        idx + 1,
+                        batches.size(),
                         batch.collect { it[0] },
                         batch.collect { it[1] },
                         batch.collect { it[2] }
@@ -107,19 +127,21 @@ workflow USER {
 }
 
 process qc_file_batch {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.6-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.7-fast'
     stageInMode 'symlink'
     errorStrategy { params.nextflow.error_strategy }
     maxRetries { params.nextflow.max_retries }
 
     input:
-        tuple val(participant_ids), path(genotype_files), val(facet_maps)
+        tuple val(batch_number), val(batch_total), val(participant_ids), path(genotype_files), val(facet_maps)
 
     output:
         path "${prefix}", emit: report_dir
 
     script:
-    prefix = "batch_${task.index}"
+    prefix = "batch_${batch_number}"
+    def batchLabel = "${batch_number}/${batch_total}"
+    def progressEvery = qcProgressEvery()
     def facetNames = facet_maps.collectMany { it.keySet().collect { key -> key.toString() } }.unique().sort()
     def header = ['participant_id', 'genotype_file'] + facetNames
     def rows = [header.collect { csvCell(it) }.join(',')]
@@ -156,7 +178,10 @@ process qc_file_batch {
     set +e
     python /opt/biovault/scripts/qc_all_files/qc_all_files.py \\
         --samplesheet ${shellQuote(prefix)}/selected_participants.csv \\
-        --output-dir ${shellQuote(prefix)}/qc_output
+        --output-dir ${shellQuote(prefix)}/qc_output \\
+        --batch-label ${shellQuote(batchLabel)} \\
+        --progress-every ${progressEvery} \\
+        --workers ${qcWorkers()}
     qc_status="\$?"
     set -e
 
@@ -197,7 +222,7 @@ process qc_file_batch {
 }
 
 process qc_input_issue {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.6-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.7-fast'
     errorStrategy { params.nextflow.error_strategy }
     maxRetries { params.nextflow.max_retries }
 
@@ -224,7 +249,9 @@ process qc_input_issue {
 
     python /opt/biovault/scripts/qc_all_files/qc_all_files.py \\
         --samplesheet ${shellQuote(prefix)}/selected_participants.csv \\
-        --output-dir ${shellQuote(prefix)}/qc_output
+        --output-dir ${shellQuote(prefix)}/qc_output \\
+        --batch-label ${shellQuote("${prefix}/input_issue")} \\
+        --progress-every ${qcProgressEvery()}
 
     cp ${shellQuote(prefix)}/qc_output/file_summary.tsv ${shellQuote(prefix)}/file_summary.tsv
     cp ${shellQuote(prefix)}/qc_output/issues.tsv ${shellQuote(prefix)}/issues.tsv
@@ -242,7 +269,7 @@ process qc_input_issue {
 }
 
 process merge_qc_reports {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.6-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.7-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     errorStrategy { params.nextflow.error_strategy }
     maxRetries { params.nextflow.max_retries }

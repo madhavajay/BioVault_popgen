@@ -89,10 +89,10 @@ cut -f1 "${TODO}.mapping" | while read -r pid; do
     [ -s "${BVLR}" ] && continue
     TXT="$(find "${DATA_DIR}/${pid}" -maxdepth 1 -name '*.txt' -print -quit 2>/dev/null || true)"
     [ -n "${TXT}" ] || { echo "skip ${pid}: no .txt" >&2; continue; }
-    printf '%s\t%s\n' "${pid}" "${TXT}"
+    printf '%s\t%s\0' "${pid}" "${TXT}"
 done > "${TODO}"
 
-N_TODO=$(wc -l < "${TODO}" | tr -d ' ')
+N_TODO=$(tr -dc '\0' < "${TODO}" | wc -c | tr -d ' ')
 echo "Stage 1: emit-long pending: ${N_TODO} (cached: $(( $(wc -l < "${TODO}.mapping") - N_TODO )))"
 
 if [ "${N_TODO}" -gt 0 ]; then
@@ -102,32 +102,43 @@ if [ "${N_TODO}" -gt 0 ]; then
     # cache with a truncated file that looks "cached".
     if [ "${BVS_MODE}" = host ]; then
         EMIT='
-            pid=$1; txt=$2
+            rec=$1
+            pid=$(printf "%s" "$rec" | cut -f1)
+            txt=$(printf "%s" "$rec" | cut -f2-)
             tmp="'"${BVLR_DIR}"'/$pid.bvlr.tmp"; fin="'"${BVLR_DIR}"'/$pid.bvlr"
             rm -f "$tmp"
-            bvs emit-long --input "$txt" \
-                --output "$tmp" \
-                --participant "$pid" >/dev/null || { echo "FAIL emit-long $pid" >&2; rm -f "$tmp"; exit 1; }
-            [ -s "$tmp" ] || { echo "EMPTY .bvlr $pid (emit-long produced nothing)" >&2; rm -f "$tmp"; exit 1; }
+            if ! bvs emit-long --input "$txt" --output "$tmp" --participant "$pid" >/dev/null; then
+                echo "WARN: skipping $pid (emit-long failed: $txt)" >&2; rm -f "$tmp"; exit 0
+            fi
+            if [ ! -s "$tmp" ]; then
+                echo "WARN: skipping $pid (empty .bvlr: $txt)" >&2; rm -f "$tmp"; exit 0
+            fi
             mv "$tmp" "$fin"
         '
     else
         EMIT='
-            pid=$1; txt=$2
+            rec=$1
+            pid=$(printf "%s" "$rec" | cut -f1)
+            txt=$(printf "%s" "$rec" | cut -f2-)
             tmp="'"${BVLR_DIR}"'/$pid.bvlr.tmp"; fin="'"${BVLR_DIR}"'/$pid.bvlr"
             rm -f "$tmp"
-            docker run --rm --platform linux/amd64 --entrypoint "" \
+            if ! docker run --rm --platform linux/amd64 --entrypoint "" \
                 -v "'"${ROOT_DIR}"':'"${ROOT_DIR}"'" -w "'"${ROOT_DIR}"'" \
                 "'"${IMAGE}"'" \
-                bvs emit-long --input "$txt" \
-                    --output "$tmp" \
-                    --participant "$pid" >/dev/null || { echo "FAIL emit-long $pid" >&2; rm -f "$tmp"; exit 1; }
-            [ -s "$tmp" ] || { echo "EMPTY .bvlr $pid" >&2; rm -f "$tmp"; exit 1; }
+                bvs emit-long --input "$txt" --output "$tmp" --participant "$pid" >/dev/null; then
+                echo "WARN: skipping $pid (emit-long failed: $txt)" >&2; rm -f "$tmp"; exit 0
+            fi
+            if [ ! -s "$tmp" ]; then
+                echo "WARN: skipping $pid (empty .bvlr: $txt)" >&2; rm -f "$tmp"; exit 0
+            fi
             mv "$tmp" "$fin"
         '
     fi
-    if ! < "${TODO}" xargs -L 1 -P "${PARALLEL}" sh -c "${EMIT}" _; then
-        echo "ERROR: one or more emit-long calls failed (see above). Aborting." >&2
+    # NUL-delimited records so filenames containing spaces survive intact;
+    # individual emit failures skip-with-warning (see EMIT) rather than abort.
+    < "${TODO}" xargs -0 -n1 -P "${PARALLEL}" sh -c "${EMIT}" _ || true
+    if [ "$(find "${BVLR_DIR}" -maxdepth 1 -name '*.bvlr' | wc -l | tr -d ' ')" -eq 0 ]; then
+        echo "ERROR: emit-long produced no .bvlr files at all. Aborting." >&2
         exit 1
     fi
 fi
@@ -141,7 +152,7 @@ for ISLAND in "${ISLANDS[@]}"; do
     awk -F'\t' -v island="${ISLAND}" '$2 == island { print $1 }' "${TODO}.mapping" \
       | while read -r pid; do
           BVLR="${BVLR_DIR}/${pid}.bvlr"
-          [ -s "${BVLR}" ] && printf '%s\n' "${BVLR}"
+          if [ -s "${BVLR}" ]; then printf '%s\n' "${BVLR}"; fi
         done > "${LIST}"
 
     COUNT=$(wc -l < "${LIST}" | tr -d ' ')

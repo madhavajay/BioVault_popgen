@@ -45,10 +45,16 @@ mkdir -p "${WORKING}" "${OUT_DIR}"
 
 THREADS="${THREADS:-$(nproc 2>/dev/null || echo 4)}"
 GENO="${GENO:-0.05}"
-MIND="${MIND:-0.1}"
+# Sample missingness is handled by fast_convert_ddna_to_plink.py as a
+# projection-specific loading-overlap count. Do not apply --mind over all
+# 76,399 gnomAD loading rows: SNP arrays only overlap ~9k of them, so the
+# old --mind 0.1 denominator incorrectly removes every healthy array sample.
+MIND="${MIND:-1}"
 MAF="${MAF:-0.01}"
 HWE="${HWE:-1e-4}"
 MIN_GS="${MIN_GS:-0.15}"
+EXPECTED_LOADINGS_OVERLAP="${EXPECTED_LOADINGS_OVERLAP:-8971}"
+MIN_LOADINGS_RATIO="${MIN_LOADINGS_RATIO:-0.95}"
 
 export LOADINGS_HT="${LOADINGS_HT:-/opt/biovault/reference/pca_loadings/gnomad.v3.1.pca_loadings.ht}"
 LOADINGS_NPZ="${LOADINGS_NPZ:-/opt/biovault/reference/pca_loadings/loadings.npz}"
@@ -72,7 +78,9 @@ export LOADINGS_NPZ
 log "STEP 1: DDNA -> PLINK bed/bim/fam (vectorized, no tped intermediary)"
 python3 "${SCRIPT_DIR}/fast_convert_ddna_to_plink.py" \
     "${DATA_DIR}" "${WORKING}/study_raw" --min-gs "${MIN_GS}" --workers "${THREADS}" \
-    --loadings-npz "${LOADINGS_NPZ}"
+    --loadings-npz "${LOADINGS_NPZ}" \
+    --expected-loadings-overlap "${EXPECTED_LOADINGS_OVERLAP}" \
+    --min-loadings-ratio "${MIN_LOADINGS_RATIO}"
 [ -f "${WORKING}/errors.tsv" ] && cp "${WORKING}/errors.tsv" "${OUT_DIR}/errors.tsv"
 [ -f "${WORKING}/warnings.tsv" ] && cp "${WORKING}/warnings.tsv" "${OUT_DIR}/warnings.tsv"
 
@@ -83,6 +91,14 @@ plink2 --bfile "${WORKING}/study_nodup" \
        --geno "${GENO}" --mind "${MIND}" --maf "${MAF}" --hwe "${HWE}" \
        --make-bed --out "${WORKING}/study_qc" --threads "${THREADS}"
 
+python3 "${SCRIPT_DIR}/write_variant_filter_report.py" \
+    --pre-prefix "${WORKING}/study_nodup" \
+    --post-prefix "${WORKING}/study_qc" \
+    --out "${OUT_DIR}/filtered.tsv" \
+    --geno "${GENO}" \
+    --maf "${MAF}" \
+    --hwe "${HWE}"
+
 {
     echo "=== QC Report ==="
     echo "Input SNPs: $(wc -l < "${WORKING}/study_raw.bim")"
@@ -90,6 +106,7 @@ plink2 --bfile "${WORKING}/study_nodup" \
     echo "Final SNPs: $(wc -l < "${WORKING}/study_qc.bim")"
     echo "Final samples: $(wc -l < "${WORKING}/study_qc.fam")"
     echo "geno=${GENO}, mind=${MIND}, maf=${MAF}, hwe=${HWE}"
+    echo "expected_loadings_overlap=${EXPECTED_LOADINGS_OVERLAP}, min_loadings_ratio=${MIN_LOADINGS_RATIO}"
 } > "${OUT_DIR}/qc_report.txt"
 
 log "STEP 3: Project onto gnomAD PCA space (numpy)"

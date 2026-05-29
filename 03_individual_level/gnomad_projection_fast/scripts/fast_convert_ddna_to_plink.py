@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import csv
 import glob
+import math
 import multiprocessing as mp
 import os
 import sys
@@ -219,6 +220,12 @@ def main():
                     default=max(1, (os.cpu_count() or 4)))
     ap.add_argument("--loadings-npz",
                     help="Optional gnomAD loadings.npz; when provided, the cohort marker map is restricted to projection coordinates.")
+    ap.add_argument("--expected-loadings-overlap", type=int,
+                    default=int(os.environ.get("BV_EXPECTED_LOADINGS_OVERLAP", "8971")),
+                    help="Expected number of gnomAD PCA loading sites observed on a healthy DDNA GSAv3 file.")
+    ap.add_argument("--min-loadings-ratio", type=float,
+                    default=float(os.environ.get("BV_MIN_LOADINGS_RATIO", "0.95")),
+                    help="Minimum fraction of expected loading overlap required to keep a sample when --loadings-npz is used.")
     args = ap.parse_args()
     out_dir = os.path.dirname(os.path.abspath(args.out_prefix)) or "."
     os.makedirs(out_dir, exist_ok=True)
@@ -346,6 +353,7 @@ def main():
 
     A1i = np.zeros((n_samples, n_snps), dtype=np.uint8)
     A2i = np.zeros((n_samples, n_snps), dtype=np.uint8)
+    matched_loading_positions = np.zeros(n_samples, dtype=np.int32)
 
     t0 = time.time()
     work = list(enumerate([path for _sid, path in sample_paths]))
@@ -365,6 +373,7 @@ def main():
                         "message": err,
                     })
                 else:
+                    matched_loading_positions[i] = ix.size
                     A1i[i, ix] = a1c
                     A2i[i, ix] = a2c
                 if completed % 50 == 0 or completed == n_samples:
@@ -389,6 +398,7 @@ def main():
                     "message": err,
                 })
             else:
+                matched_loading_positions[i] = ix.size
                 A1i[i, ix] = a1c
                 A2i[i, ix] = a2c
             if completed % 50 == 0 or completed == n_samples:
@@ -408,6 +418,8 @@ def main():
         keep_sample = [idx for idx in range(n_samples) if idx not in failed_indices]
         A1i = A1i[keep_sample, :]
         A2i = A2i[keep_sample, :]
+        matched_loading_positions = matched_loading_positions[keep_sample]
+        sample_paths = [sample_paths[idx] for idx in keep_sample]
         sample_ids = [sample_ids[idx] for idx in keep_sample]
         n_samples = len(sample_ids)
     _write_errors(errors_tsv, errors)
@@ -497,6 +509,55 @@ def main():
         code[out_of_set] = 0b01
     print(f"Genotype codes in {time.time()-t0:.2f}s; matrix shape {code.shape}")
 
+    if projection_reference is not None:
+        min_observed = int(math.ceil(args.expected_loadings_overlap * args.min_loadings_ratio))
+        keep_samples = matched_loading_positions >= min_observed
+        n_drop = int((~keep_samples).sum())
+        print(
+            "Projection overlap filter: "
+            f"expected={args.expected_loadings_overlap:,}, "
+            f"min_ratio={args.min_loadings_ratio:.3f}, "
+            f"min_observed={min_observed:,}; "
+            f"keeping {int(keep_samples.sum())}/{n_samples} samples"
+        )
+        if matched_loading_positions.size:
+            qs = np.percentile(matched_loading_positions, [0, 5, 25, 50, 75, 95, 100])
+            print(
+                "Observed loading positions/sample: "
+                f"min={qs[0]:.0f}, p5={qs[1]:.0f}, p25={qs[2]:.0f}, "
+                f"median={qs[3]:.0f}, p75={qs[4]:.0f}, p95={qs[5]:.0f}, max={qs[6]:.0f}"
+            )
+        if n_drop:
+            with open(errors_tsv, "a", encoding="utf-8", newline="") as handle:
+                writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+                for sid, (_sample_id, sample_path), observed, keep in zip(
+                    sample_ids, sample_paths, matched_loading_positions, keep_samples
+                ):
+                    if keep:
+                        continue
+                    writer.writerow([
+                        sid,
+                        sample_path,
+                        "ERROR",
+                        "LOW_LOADINGS_OVERLAP",
+                        (
+                            f"observed {int(observed)} gnomAD PCA loading positions; "
+                            f"requires >= {min_observed} "
+                            f"({args.min_loadings_ratio:.3f} x expected {args.expected_loadings_overlap})"
+                        ),
+                    ])
+        if not keep_samples.any():
+            sys.exit(
+                "ERROR: no samples passed the projection overlap filter; "
+                f"requires >= {min_observed} observed loading positions"
+            )
+        if n_drop:
+            code = code[keep_samples, :]
+            sample_ids = [sid for sid, keep in zip(sample_ids, keep_samples) if keep]
+            sample_paths = [row for row, keep in zip(sample_paths, keep_samples) if keep]
+            matched_loading_positions = matched_loading_positions[keep_samples]
+            n_samples = len(sample_ids)
+
     # --- Write .fam ---------------------------------------------------------
     t0 = time.time()
     with open(args.out_prefix + ".fam", "w") as f:
@@ -541,7 +602,7 @@ def main():
         f.write(bed_bytes.tobytes())
     print(f"Wrote bed/bim/fam in {time.time()-t0:.2f}s")
     print(f"  {args.out_prefix}.fam ({n_samples} samples)")
-    print(f"  {args.out_prefix}.bim ({k} SNPs)")
+    print(f"  {args.out_prefix}.bim ({len(keep_idx)} SNPs)")
     print(f"  {args.out_prefix}.bed")
 
 

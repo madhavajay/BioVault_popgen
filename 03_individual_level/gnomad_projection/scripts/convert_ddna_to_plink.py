@@ -41,9 +41,10 @@ def main():
     out_prefix = sys.argv[2]
     min_gs = float(sys.argv[3]) if len(sys.argv) > 3 else 0.15
 
-    # Find sample directories (numeric names)
+    # Find sample directories. Flow participant IDs are not guaranteed to be
+    # numeric, so do not restrict this to [0-9]*.
     sample_dirs = sorted(
-        d for d in glob.glob(os.path.join(data_dir, '[0-9]*'))
+        d for d in glob.glob(os.path.join(data_dir, '*'))
         if os.path.isdir(d)
     )
     if not sample_dirs:

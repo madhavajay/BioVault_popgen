@@ -65,7 +65,7 @@ workflow USER {
 }
 
 process pca_qc_fast {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.6-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.7-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy 'terminate'

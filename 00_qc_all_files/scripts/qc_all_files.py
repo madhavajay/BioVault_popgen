@@ -13,9 +13,11 @@ import csv
 import json
 import logging
 import math
+import multiprocessing as mp
 import os
 import sys
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
@@ -180,6 +182,53 @@ def is_vendor_missing_value(value: str) -> bool:
     return str(value).strip().upper() in VENDOR_MISSING_VALUES
 
 
+class _BufferHandler(logging.Handler):
+    """Collect LogRecords in a worker process so the parent can replay them
+    into the real log in deterministic order (avoids concurrent file writes)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+_WORKER_FULL_DIAG = False
+
+
+def _init_worker(full_diagnostics: bool) -> None:
+    global _WORKER_FULL_DIAG
+    _WORKER_FULL_DIAG = full_diagnostics
+    logger = logging.getLogger("qc_all_files")
+    logger.handlers.clear()
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    logger.addHandler(_BufferHandler())
+
+
+def _process_record(rec: "InputRecord", logger: logging.Logger, full_diagnostics: bool) -> tuple["FileSummary", list["Issue"]]:
+    """qc_one with the same fail-safe wrapper the serial loop uses: one bad
+    file becomes a FAIL summary, never an aborted run."""
+    try:
+        return qc_one(rec, logger, full_diagnostics=full_diagnostics)
+    except Exception as exc:
+        logger.exception("Unexpected QC exception for %s", rec.path)
+        rec_issues = [issue(rec, "unknown", 0, "ERROR", "UNEXPECTED_QC_EXCEPTION", f"{type(exc).__name__}: {exc}")]
+        facet_count, facet_missing_count, missing_facets, facets_json = facet_summary(rec)
+        summary = FileSummary(rec.participant_id, str(rec.path), rec.source, "unknown", "FAIL", rec.path.exists(), 0, 0, 0, facet_count, facet_missing_count, missing_facets, facets_json, 1, 0, "unexpected QC exception")
+        return summary, rec_issues
+
+
+def _worker(item: tuple[int, "InputRecord"]) -> tuple[int, "FileSummary", list["Issue"], list[logging.LogRecord]]:
+    idx, rec = item
+    logger = logging.getLogger("qc_all_files")
+    buffer = logger.handlers[0]
+    buffer.records.clear()
+    summary, rec_issues = _process_record(rec, logger, _WORKER_FULL_DIAG)
+    return idx, summary, rec_issues, list(buffer.records)
+
+
 def setup_logging(output_dir: Path) -> logging.Logger:
     output_dir.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("qc_all_files")
@@ -322,7 +371,6 @@ def validate_ddna(rec: InputRecord) -> tuple[int, list[Issue]]:
         issues.append(issue(rec, "ddna", 0, "ERROR", "NO_DATA_ROWS", "file has no genotype data rows"))
     return raw_rows, issues
 
-
 def validate_illumina(rec: InputRecord) -> tuple[int, list[Issue]]:
     issues: list[Issue] = []
     raw_rows = 0
@@ -456,7 +504,99 @@ def read_normalizer_warnings(path: Path, rec: InputRecord, detected: str) -> lis
     return out
 
 
-def normalize_file(rec: InputRecord, detected: str) -> tuple[int, int, list[Issue]]:
+def _read_ddna_raw(path: Path, skiprows: set[int] | None = None) -> pd.DataFrame:
+    return pd.read_csv(
+        path,
+        sep="\t",
+        header=None,
+        names=DDNA_COLS,
+        usecols=list(range(7)),
+        dtype={"rsid": str, "chrom": str, "pos": str, "gt": str},
+        na_filter=False,
+        engine="c",
+        low_memory=False,
+        on_bad_lines="error",
+        skip_blank_lines=True,
+        comment="#",
+        skiprows=skiprows,
+    )
+
+
+def _ddna_data_row_count(raw: pd.DataFrame) -> int:
+    """Data rows in a pandas-read DDNA frame, matching count_raw_rows_fast
+    (every non-blank/non-comment line except embedded DDNA header rows)."""
+    if raw.empty:
+        return 0
+    is_header = pd.Series(True, index=raw.index)
+    for col in DDNA_COLS:
+        is_header &= (
+            raw[col].astype(str).str.strip().str.lstrip("﻿").str.lower() == col
+        )
+    return int(len(raw) - int(is_header.sum()))
+
+
+def read_ddna_pandas_qc(path: Path, skiprows: set[int] | None = None) -> pd.DataFrame:
+    return geno.finalize_ddna_frame(_read_ddna_raw(path, skiprows))
+
+
+def scan_ddna_structural_bad_lines(rec: InputRecord) -> tuple[set[int], list[Issue]]:
+    """Find rows pandas cannot safely ingest. skiprows uses zero-based file rows."""
+    skiprows: set[int] = set()
+    issues: list[Issue] = []
+    try:
+        with rec.path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if "\x00" in line:
+                    skiprows.add(line_number - 1)
+                    issues.append(issue(rec, "ddna", line_number, "ERROR", "NUL_BYTE", "line contains NUL byte; file may be binary or corrupt", line))
+                    continue
+                if line.count('"') % 2:
+                    skiprows.add(line_number - 1)
+                    issues.append(issue(rec, "ddna", line_number, "ERROR", "UNBALANCED_QUOTE", "line contains an unbalanced quote; pandas parser cannot safely ingest it", line))
+                    continue
+                fields = line.rstrip("\n").rstrip("\r").split("\t")
+                lower = [field.strip().lstrip("\ufeff").lower() for field in fields]
+                if lower[:7] == DDNA_COLS:
+                    continue
+                if len(fields) < 7:
+                    skiprows.add(line_number - 1)
+                    if len(fields) == 1 and "," in fields[0]:
+                        issues.append(issue(rec, "ddna", line_number, "ERROR", "POSSIBLE_CSV", "expected tab-delimited DDNA, but line looks comma-delimited", line))
+                    issues.append(issue(rec, "ddna", line_number, "ERROR", "DDNA_FIELD_COUNT", f"expected at least 7 tab-separated fields, found {len(fields)}", line))
+    except Exception as exc:
+        issues.append(issue(rec, "ddna", 0, "ERROR", "READ_EXCEPTION", f"{type(exc).__name__}: {exc}"))
+    return skiprows, issues
+
+
+def normalize_ddna_file(rec: InputRecord) -> tuple[int, int, int | None, list[Issue]]:
+    try:
+        raw = _read_ddna_raw(rec.path)
+        df = geno.finalize_ddna_frame(raw)
+        rows = int(len(df))
+        unique = int(df["variant_id"].nunique(dropna=True)) if rows else 0
+        return rows, unique, _ddna_data_row_count(raw), []
+    except Exception as first_exc:
+        skiprows, issues = scan_ddna_structural_bad_lines(rec)
+        if not skiprows:
+            return 0, 0, None, [issue(rec, "ddna", 0, "ERROR", "NORMALIZER_EXCEPTION", f"{type(first_exc).__name__}: {first_exc}")]
+        try:
+            df = read_ddna_pandas_qc(rec.path, skiprows=skiprows)
+            rows = int(len(df))
+            unique = int(df["variant_id"].nunique(dropna=True)) if rows else 0
+            issues.append(issue(rec, "ddna", 0, "WARNING", "DDNA_PANDAS_RETRY", f"pandas parser succeeded after skipping {len(skiprows)} structurally bad line(s)"))
+            return rows, unique, None, issues
+        except Exception as second_exc:
+            issues.append(issue(rec, "ddna", 0, "ERROR", "NORMALIZER_EXCEPTION", f"{type(second_exc).__name__}: {second_exc}; initial error: {type(first_exc).__name__}: {first_exc}"))
+            return 0, 0, None, issues
+
+
+def normalize_file(rec: InputRecord, detected: str) -> tuple[int, int, int | None, list[Issue]]:
+    if detected == "ddna":
+        return normalize_ddna_file(rec)
+
     old_warnings = os.environ.get("BIOVAULT_WARNINGS_TSV")
     old_fast = os.environ.get("BIOVAULT_FAST_NORMALIZE")
     warning_file = tempfile.NamedTemporaryFile(prefix="biovault_qc_warnings_", suffix=".tsv", delete=False)
@@ -469,9 +609,9 @@ def normalize_file(rec: InputRecord, detected: str) -> tuple[int, int, list[Issu
         rows = int(len(df))
         unique = int(df["variant_id"].nunique(dropna=True)) if rows else 0
         issues = read_normalizer_warnings(warning_path, rec, detected)
-        return rows, unique, issues
+        return rows, unique, None, issues
     except Exception as exc:
-        return 0, 0, [issue(rec, "unknown", 0, "ERROR", "NORMALIZER_EXCEPTION", f"{type(exc).__name__}: {exc}")]
+        return 0, 0, None, [issue(rec, "unknown", 0, "ERROR", "NORMALIZER_EXCEPTION", f"{type(exc).__name__}: {exc}")]
     finally:
         if old_warnings is None:
             os.environ.pop("BIOVAULT_WARNINGS_TSV", None)
@@ -522,21 +662,26 @@ def qc_one(rec: InputRecord, logger: logging.Logger, full_diagnostics: bool = Fa
         all_issues.append(issue(rec, detected, 0, "ERROR", "SNIFF_EXCEPTION", f"{type(exc).__name__}: {exc}"))
 
     detected = detected if detected == "illumina" else ("ddna" if detected != "unknown" else detected)
-    try:
-        raw_rows = count_raw_rows_fast(rec, detected)
-    except Exception as exc:
-        raw_rows = 0
-        all_issues.append(issue(rec, detected, 0, "ERROR", "READ_EXCEPTION", f"{type(exc).__name__}: {exc}"))
 
-    normalized_rows, unique_variants, norm_issues = normalize_file(rec, detected)
+    normalized_rows, unique_variants, raw_rows_norm, norm_issues = normalize_file(rec, detected)
     for norm_issue in norm_issues:
         norm_issue.detected_format = detected
     all_issues.extend(norm_issues)
 
+    # raw_rows comes free from the normalizer's pandas read on the clean path;
+    # only fall back to a second file scan when it could not supply the count.
+    if raw_rows_norm is not None:
+        raw_rows = raw_rows_norm
+    else:
+        try:
+            raw_rows = count_raw_rows_fast(rec, detected)
+        except Exception as exc:
+            raw_rows = 0
+            all_issues.append(issue(rec, detected, 0, "ERROR", "READ_EXCEPTION", f"{type(exc).__name__}: {exc}"))
+
     run_diagnostics = (
         full_diagnostics
         or normalized_rows == 0
-        or (detected == "ddna" and raw_rows != normalized_rows)
         or any(item.code in FILE_ERROR_CODES for item in all_issues)
     )
     if run_diagnostics:
@@ -698,6 +843,9 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, default=Path("00_qc_all_files/results"))
     parser.add_argument("--fail-on-issues", action="store_true", help="Exit 1 when any file has an ERROR")
     parser.add_argument("--full-diagnostics", action="store_true", help="Run the slower line-by-line validator for every readable file")
+    parser.add_argument("--batch-label", help="Human-readable batch label for progress logs")
+    parser.add_argument("--progress-every", type=int, default=int(os.environ.get("BV_QC_PROGRESS_EVERY", "50")), help="Log aggregate progress after this many files; set 0 to disable")
+    parser.add_argument("--workers", type=int, default=int(os.environ.get("BV_QC_WORKERS", os.cpu_count() or 1)), help="Parallel worker processes (default: all CPUs); 1 = serial")
     args = parser.parse_args()
 
     logger = setup_logging(args.output_dir)
@@ -712,17 +860,87 @@ def main() -> int:
 
     summaries: list[FileSummary] = []
     issues: list[Issue] = []
-    logger.info("Scanning %d input records", len(records))
-    for rec in records:
+    batch_label = args.batch_label
+    if not batch_label and args.samplesheet:
+        batch_label = args.samplesheet.parent.name
+    batch_label = batch_label or "inputs"
+    total_records = len(records)
+    progress_every = max(0, args.progress_every)
+    started = time.monotonic()
+    pass_count = 0
+    warn_count = 0
+    fail_count = 0
+    workers = max(1, args.workers)
+    logger.info(
+        "Scanning %d input records batch=%s progress_every=%d workers=%d",
+        total_records,
+        batch_label,
+        progress_every,
+        workers,
+    )
+
+    def tally(summary: FileSummary) -> None:
+        nonlocal pass_count, warn_count, fail_count
+        if summary.status == "PASS":
+            pass_count += 1
+        elif summary.status == "WARN":
+            warn_count += 1
+        else:
+            fail_count += 1
+
+    def emit_progress(processed: int) -> None:
+        if not progress_every:
+            return
+        if processed % progress_every != 0 and processed != total_records:
+            return
+        elapsed = max(time.monotonic() - started, 0.001)
+        rate = processed / elapsed
+        remaining = max(total_records - processed, 0)
+        eta = remaining / rate if rate > 0 else 0.0
+        logger.info(
+            "QC progress batch=%s processed=%d/%d pass=%d warn=%d fail=%d rate=%.2f files/s eta=%.0fs",
+            batch_label,
+            processed,
+            total_records,
+            pass_count,
+            warn_count,
+            fail_count,
+            rate,
+            eta,
+        )
+
+    pool = None
+    if workers > 1 and total_records > 1:
         try:
-            summary, rec_issues = qc_one(rec, logger, full_diagnostics=args.full_diagnostics)
-        except Exception as exc:
-            logger.exception("Unexpected QC exception for %s", rec.path)
-            rec_issues = [issue(rec, "unknown", 0, "ERROR", "UNEXPECTED_QC_EXCEPTION", f"{type(exc).__name__}: {exc}")]
-            facet_count, facet_missing_count, missing_facets, facets_json = facet_summary(rec)
-            summary = FileSummary(rec.participant_id, str(rec.path), rec.source, "unknown", "FAIL", rec.path.exists(), 0, 0, 0, facet_count, facet_missing_count, missing_facets, facets_json, 1, 0, "unexpected QC exception")
-        summaries.append(summary)
-        issues.extend(rec_issues)
+            ctx = mp.get_context("fork")
+            pool = ctx.Pool(min(workers, total_records), initializer=_init_worker, initargs=(args.full_diagnostics,))
+        except (OSError, ValueError) as exc:
+            logger.warning("Process pool unavailable (%s); running serially", exc)
+            pool = None
+
+    if pool is not None:
+        collected: dict[int, tuple[FileSummary, list[Issue]]] = {}
+        with pool:
+            for idx, summary, rec_issues, log_records in pool.imap_unordered(
+                _worker, list(enumerate(records)), chunksize=1
+            ):
+                for record in log_records:
+                    logger.handle(record)
+                collected[idx] = (summary, rec_issues)
+                tally(summary)
+                emit_progress(len(collected))
+        # Reassemble in original record order so reports are deterministic.
+        for idx in range(total_records):
+            summary, rec_issues = collected[idx]
+            summaries.append(summary)
+            issues.extend(rec_issues)
+    else:
+        for rec in records:
+            summary, rec_issues = _process_record(rec, logger, args.full_diagnostics)
+            summaries.append(summary)
+            issues.extend(rec_issues)
+            tally(summary)
+            emit_progress(len(summaries))
 
     write_reports(args.output_dir, records, summaries, issues, logger)
     total_errors = sum(row.errors for row in summaries)

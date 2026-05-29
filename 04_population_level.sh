@@ -163,7 +163,7 @@ echo
 echo "== Stage B: FST + AIMs (${IMAGE}) =="
 rm -rf "${WORK}"; mkdir -p "${WORK}" "${RES}"
 docker run --rm \
-    --platform linux/amd64 \
+    ${DOCKER_PLATFORM:+--platform "$DOCKER_PLATFORM"} \
     -u "$(id -u):$(id -g)" \
     -v "${ROOT_DIR}:${ROOT_DIR}" \
     -w "${ROOT_DIR}" \

@@ -157,8 +157,8 @@ def read_txt(path: Path) -> pd.DataFrame:
 
 
 def load_all_samples(data_dir: Path) -> dict:
-    """Return {sample_id: DataFrame} for all numeric-named subdirectories."""
-    dirs = sorted(d for d in data_dir.iterdir() if d.is_dir() and d.name.isdigit())
+    """Return {sample_id: DataFrame} for all participant subdirectories."""
+    dirs = sorted(d for d in data_dir.iterdir() if d.is_dir())
     samples = {}
     errors: list[dict[str, str]] = []
     for d in dirs:
@@ -361,7 +361,7 @@ def nmf_components(samples: dict, chroms: list,
 
     variance = pd.Series(0.0, index=call_rate.index)
     if not variance_candidates.empty:
-        variance.loc[variance_candidates.index] = variance_candidates
+        variance.loc[variance_candidates.index] = variance_candidates.to_numpy(dtype=float)
     keep = prekeep & (variance > 0.0)
 
     filter_df = panel.set_index("rsid").reindex(all_variant_ids)[["chrom", "pos"]].copy()

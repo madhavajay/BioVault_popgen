@@ -7,7 +7,7 @@
 //       per-participant `bvs emit-long`, then per-country `bvs aggregate-long`
 //       -> allele_freq_<country_norm>.tsv
 //
-//   population_fst_aims  (ghcr.io/madhavajay/biovault-popgen:0.1.6-fast)
+//   population_fst_aims  (ghcr.io/madhavajay/biovault-popgen:0.1.7-fast)
 //       FST (load/merge -> WC84 -> visualise) then AIMs (merge w/ bundled
 //       gnomAD ref -> differential SNPs -> AIMs panels)
 //
@@ -206,7 +206,7 @@ process split_allele_freq {
 }
 
 process population_fst_aims {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.6-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.7-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy 'terminate'

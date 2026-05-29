@@ -28,6 +28,7 @@ import subprocess
 import sys
 import time
 from collections import deque
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import matplotlib
@@ -69,6 +70,9 @@ LD_R2 = float(os.environ.get("BV_LD_R2", "0.2"))
 CHUNK_VARIANTS = int(os.environ.get("BV_CHUNK_VARIANTS", "4096"))
 WRITE_MATRICES = os.environ.get("BV_WRITE_MATRICES", "0").strip().lower() in {"1", "true", "yes"}
 PLINK_BACKEND = os.environ.get("BV_PCA_BACKEND", "auto").strip().lower()
+PARSE_MODE = os.environ.get("BV_PARSE_MODE", "process").strip().lower()
+DEFAULT_WORKERS = os.cpu_count() or 1
+WORKERS = max(1, int(os.environ.get("BV_WORKERS", str(DEFAULT_WORKERS))))
 
 BASES = np.array([b"A", b"C", b"G", b"T"], dtype="S1")
 BASE_LABELS = np.array([".", "A", "C", "G", "T"], dtype=object)
@@ -166,6 +170,115 @@ def read_sample(sample_id: str, path: Path) -> pd.DataFrame:
     return df
 
 
+def _cache_path_for(cache_dir: Path, idx: int, sample_id: str) -> Path:
+    safe = "".join(c if c.isalnum() or c in {"_", "-", "."} else "_" for c in sample_id)
+    return cache_dir / f"{idx:06d}_{safe}.npz"
+
+
+def parse_and_cache_sample(task: tuple[int, str, str, str]) -> dict[str, str | int | None]:
+    idx, sample_id, path_s, cache_path_s = task
+    path = Path(path_s)
+    cache_path = Path(cache_path_s)
+    try:
+        df = read_sample(sample_id, path)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(
+            cache_path,
+            rsid=df["rsid"].to_numpy(dtype="S32"),
+            chrom=df["chromosome"].to_numpy(dtype="S2"),
+            pos=df["position"].to_numpy(dtype=np.int64),
+            gt=df["genotype"].to_numpy(dtype="S2"),
+        )
+        return {
+            "idx": idx,
+            "sample_id": sample_id,
+            "file": str(path),
+            "cache": str(cache_path),
+            "rows": int(len(df)),
+            "error": None,
+        }
+    except Exception as exc:
+        return {
+            "idx": idx,
+            "sample_id": sample_id,
+            "file": str(path),
+            "cache": str(cache_path),
+            "rows": 0,
+            "error": str(exc),
+        }
+
+
+def parse_samples_to_cache(samples: list[tuple[str, Path]]) -> tuple[list[dict[str, str | int]], list[dict[str, str]]]:
+    cache_dir = WORK_DIR / "parsed_samples"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    for old in cache_dir.glob("*.npz"):
+        old.unlink()
+
+    workers = max(1, min(len(samples), WORKERS))
+    parse_mode = PARSE_MODE if PARSE_MODE in {"process", "thread", "serial"} else "process"
+    if parse_mode != PARSE_MODE:
+        log.warning("Unknown BV_PARSE_MODE=%r; using process", PARSE_MODE)
+
+    tasks = [
+        (idx, sample_id, str(path), str(_cache_path_for(cache_dir, idx, sample_id)))
+        for idx, (sample_id, path) in enumerate(samples)
+    ]
+    results: list[dict[str, str | int]] = []
+    errors: list[dict[str, str]] = []
+    start = time.perf_counter()
+
+    with timed(f"Parsing {len(samples)} samples to cache with {workers} {parse_mode} workers"):
+        completed = 0
+        if workers > 1 and parse_mode != "serial":
+            executor_cls = ProcessPoolExecutor if parse_mode == "process" else ThreadPoolExecutor
+            try:
+                pool_ctx = executor_cls(max_workers=workers)
+            except PermissionError as exc:
+                if parse_mode != "process":
+                    raise
+                log.warning("Process workers unavailable (%s); falling back to thread workers", exc)
+                parse_mode = "thread"
+                pool_ctx = ThreadPoolExecutor(max_workers=workers)
+            with pool_ctx as pool:
+                futures = {pool.submit(parse_and_cache_sample, task): task for task in tasks}
+                for future in as_completed(futures):
+                    row = future.result()
+                    completed += 1
+                    if row["error"]:
+                        log.error("Skipping %s: %s", row["sample_id"], row["error"])
+                        errors.append({
+                            "participant_id": str(row["sample_id"]),
+                            "file": str(row["file"]),
+                            "code": "PARSE_FAILED",
+                            "message": str(row["error"]),
+                        })
+                    else:
+                        results.append(row)  # type: ignore[arg-type]
+                    log_progress("Parsed", completed, len(samples), start)
+        else:
+            for task in tasks:
+                row = parse_and_cache_sample(task)
+                completed += 1
+                if row["error"]:
+                    log.error("Skipping %s: %s", row["sample_id"], row["error"])
+                    errors.append({
+                        "participant_id": str(row["sample_id"]),
+                        "file": str(row["file"]),
+                        "code": "PARSE_FAILED",
+                        "message": str(row["error"]),
+                    })
+                else:
+                    results.append(row)  # type: ignore[arg-type]
+                log_progress("Parsed", completed, len(samples), start)
+
+    results.sort(key=lambda row: int(row["idx"]))
+    write_errors(errors)
+    if not results:
+        raise RuntimeError("No genotype files could be parsed; see errors.tsv")
+    log.info("Parsed cache rows: %d samples, %d genotype rows", len(results), sum(int(r["rows"]) for r in results))
+    return results, errors
+
+
 def log_progress(label: str, done: int, total: int, start: float) -> None:
     if done % 50 != 0 and done != total:
         return
@@ -187,48 +300,34 @@ def genotype_codes(values: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarr
     return a1, a2, called
 
 
-def build_snp_universe(samples: list[tuple[str, Path]]) -> tuple[list[str], pd.DataFrame, list[tuple[str, Path]], list[dict[str, str]]]:
+def build_snp_universe(samples: list[tuple[str, Path]]) -> tuple[list[str], pd.DataFrame, list[dict[str, str | int]], list[dict[str, str]]]:
     snp_to_idx: dict[str, int] = {}
     records: list[tuple[str, str, int]] = []
-    usable: list[tuple[str, Path]] = []
-    errors: list[dict[str, str]] = []
+    parsed, errors = parse_samples_to_cache(samples)
     start = time.perf_counter()
-    with timed(f"Pass 1: building full SNP universe from {len(samples)} files"):
-        for i, (sample_id, path) in enumerate(samples, 1):
-            try:
-                df = read_sample(sample_id, path)
-            except Exception as exc:
-                log.error("Skipping %s: %s", sample_id, exc)
-                errors.append({
-                    "participant_id": sample_id,
-                    "file": str(path),
-                    "code": "PARSE_FAILED",
-                    "message": str(exc),
-                })
-                log_progress("Scanned", i, len(samples), start)
-                continue
-            usable.append((sample_id, path))
-            for rsid, chrom, pos in df[["rsid", "chromosome", "position"]].itertuples(index=False, name=None):
+    with timed(f"Pass 1: building full SNP universe from {len(parsed)} cached samples"):
+        for i, row in enumerate(parsed, 1):
+            data = np.load(str(row["cache"]), allow_pickle=False)
+            rsids = data["rsid"].astype(str)
+            chroms = data["chrom"].astype(str)
+            for rsid, chrom, pos in zip(rsids, chroms, data["pos"]):
                 if rsid not in snp_to_idx:
                     snp_to_idx[rsid] = len(records)
                     records.append((rsid, str(chrom), int(pos)))
-            log_progress("Scanned", i, len(samples), start)
+            log_progress("Scanned", i, len(parsed), start)
 
-    write_errors(errors)
-    if not usable:
-        raise RuntimeError("No genotype files could be parsed; see errors.tsv")
     if not records:
         raise RuntimeError("Parsed files contained no usable genotype rows")
 
     snp_info = pd.DataFrame(records, columns=["rsid", "chromosome", "position"])
     MERGED_DIR.mkdir(parents=True, exist_ok=True)
     snp_info.to_csv(MERGED_DIR / "snp_info.tsv", sep="\t", index=False)
-    log.info("Full SNP universe: %d SNPs x %d samples", len(records), len(usable))
-    return [r[0] for r in records], snp_info, usable, errors
+    log.info("Full SNP universe: %d SNPs x %d samples", len(records), len(parsed))
+    return [r[0] for r in records], snp_info, parsed, errors
 
 
 def fill_allele_memmaps(
-    samples: list[tuple[str, Path]],
+    samples: list[dict[str, str | int]],
     snp_ids: list[str],
 ) -> tuple[np.memmap, np.memmap, list[str]]:
     WORK_DIR.mkdir(parents=True, exist_ok=True)
@@ -243,17 +342,17 @@ def fill_allele_memmaps(
     a1_mm[:] = 0
     a2_mm[:] = 0
     snp_to_idx = {rsid: idx for idx, rsid in enumerate(snp_ids)}
-    sample_ids = [sid for sid, _ in samples]
+    sample_ids = [str(row["sample_id"]) for row in samples]
 
     start = time.perf_counter()
     with timed(f"Pass 2: filling compact allele memmaps for {n_samples} samples"):
-        for i, (sample_id, path) in enumerate(samples):
-            df = read_sample(sample_id, path)
-            idx = pd.Series(df["rsid"].to_numpy(), copy=False).map(snp_to_idx)
+        for i, row in enumerate(samples):
+            data = np.load(str(row["cache"]), allow_pickle=False)
+            idx = pd.Series(data["rsid"].astype(str), copy=False).map(snp_to_idx)
             valid = idx.notna().to_numpy()
             if valid.any():
                 ix = idx[valid].to_numpy(dtype=np.int64)
-                c1, c2, _called = genotype_codes(df.loc[valid, "genotype"].to_numpy())
+                c1, c2, _called = genotype_codes(data["gt"][valid])
                 a1_mm[i, ix] = c1
                 a2_mm[i, ix] = c2
             log_progress("Loaded", i + 1, n_samples, start)
