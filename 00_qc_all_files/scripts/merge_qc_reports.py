@@ -9,6 +9,22 @@ from pathlib import Path
 
 import pandas as pd
 
+FILE_ERROR_CODES = {
+    "FILE_NOT_FOUND",
+    "NOT_A_FILE",
+    "FILE_NOT_READABLE",
+    "FILE_EMPTY",
+    "NO_DATA_ROWS",
+    "READ_EXCEPTION",
+    "SNIFF_EXCEPTION",
+    "NORMALIZER_EXCEPTION",
+    "UNEXPECTED_QC_EXCEPTION",
+    "QC_PROCESS_EXIT",
+    "ILLUMINA_MISSING_COLUMNS",
+    "ILLUMINA_NO_HEADER",
+    "ILLUMINA_NO_DATA_SECTION",
+}
+
 
 TABLES = {
     "file_summary": [
@@ -75,14 +91,25 @@ def percent(numerator: int, denominator: int) -> float:
     return round((numerator / denominator) * 100.0, 2)
 
 
+def split_error_frames(issues: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if issues.empty:
+        return issues.copy(), issues.copy()
+    errors = issues[issues["severity"] == "ERROR"].copy()
+    line_numbers = pd.to_numeric(errors["line_number"], errors="coerce").fillna(0)
+    file_mask = (line_numbers <= 0) | errors["code"].isin(FILE_ERROR_CODES)
+    return errors[file_mask].copy(), errors[~file_mask].copy()
+
+
 def build_run_report(file_summary: pd.DataFrame, issues: pd.DataFrame) -> tuple[str, dict[str, int | float]]:
     files_checked = int(len(file_summary))
-    errors = numeric(file_summary["errors"]) if "errors" in file_summary else pd.Series(dtype=int)
     raw_rows = numeric(file_summary["raw_rows"]) if "raw_rows" in file_summary else pd.Series(dtype=int)
     facet_missing = numeric(file_summary["facet_missing_count"]) if "facet_missing_count" in file_summary else pd.Series(dtype=int)
-    files_with_errors = int((errors > 0).sum()) if not errors.empty else 0
+    file_errors, row_errors = split_error_frames(issues)
+    files_with_file_errors = int(file_errors["file"].nunique()) if not file_errors.empty else 0
+    files_with_row_errors = int(row_errors["file"].nunique()) if not row_errors.empty else 0
+    total_row_error_rows = int(len(row_errors[["file", "line_number"]].drop_duplicates())) if not row_errors.empty else 0
     files_with_missing_facets = int((facet_missing > 0).sum()) if not facet_missing.empty else 0
-    usable_files = files_checked - files_with_errors
+    usable_files = files_checked - files_with_file_errors
 
     if not issues.empty:
         line_numbers = pd.to_numeric(issues["line_number"], errors="coerce").fillna(0)
@@ -97,14 +124,17 @@ def build_run_report(file_summary: pd.DataFrame, issues: pd.DataFrame) -> tuple[
 
     raw_rows_total = int(raw_rows.sum()) if not raw_rows.empty else 0
     usable_rows = 0
+    file_error_files = set(file_errors["file"].tolist()) if not file_errors.empty else set()
     if not file_summary.empty:
         for row in file_summary.to_dict("records"):
-            if numeric_value(row.get("errors", 0)) == 0:
+            if row.get("file", "") not in file_error_files:
                 usable_rows += numeric_value(row.get("normalized_rows", 0))
 
     metrics = {
         "files_checked": files_checked,
-        "files_with_errors": files_with_errors,
+        "files_with_file_errors": files_with_file_errors,
+        "files_with_row_errors": files_with_row_errors,
+        "total_row_error_rows": total_row_error_rows,
         "files_with_warning_rows": files_with_warning_rows,
         "total_warning_rows": total_warning_rows,
         "files_with_missing_facets": files_with_missing_facets,
@@ -113,7 +143,9 @@ def build_run_report(file_summary: pd.DataFrame, issues: pd.DataFrame) -> tuple[
     }
     report = "\n".join([
         f"{metrics['files_checked']} number of files checked",
-        f"{metrics['files_with_errors']} files with errors (unusable file)",
+        f"{metrics['files_with_file_errors']} files with file errors (unusable file)",
+        f"{metrics['files_with_row_errors']} files with row errors (bad rows skipped)",
+        f"{metrics['total_row_error_rows']} total row error rows",
         f"{metrics['files_with_warning_rows']} files with warning rows",
         f"{metrics['total_warning_rows']} total warning rows",
         f"{metrics['files_with_missing_facets']} files with missing facets",
@@ -155,6 +187,9 @@ def main() -> int:
     file_summary.to_csv(args.output_dir / "file_summary.tsv", sep="\t", index=False)
     issues.to_csv(args.output_dir / "issues.tsv", sep="\t", index=False)
     issues[issues["severity"] == "ERROR"].to_csv(args.output_dir / "errors.tsv", sep="\t", index=False)
+    file_errors, row_errors = split_error_frames(issues)
+    file_errors.to_csv(args.output_dir / "file_errors.tsv", sep="\t", index=False)
+    row_errors.to_csv(args.output_dir / "row_errors.tsv", sep="\t", index=False)
     issues[issues["severity"] == "WARNING"].to_csv(args.output_dir / "warnings.tsv", sep="\t", index=False)
     issues[issues["severity"] == "QUALITY"].to_csv(args.output_dir / "quality_issues.tsv", sep="\t", index=False)
     facet_values.to_csv(args.output_dir / "facet_values.tsv", sep="\t", index=False)

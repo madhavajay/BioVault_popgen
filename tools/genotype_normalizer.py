@@ -8,6 +8,45 @@ The parser returns one canonical row per comparable variant:
 `variant_id` is the stable downstream join key. For DDNA it is the rsid. For
 Illumina it is the extracted/resolved rsid when available, otherwise a
 `chrom:pos` locus key. Raw Illumina `SNP Name` is preserved as `probe_id`.
+
+Edge-case policy
+----------------
+This module is intentionally permissive about vendor/common genotype quirks so
+that one bad row does not make a whole participant unusable:
+
+* DDNA and Illumina formats are sniffed from the first meaningful line.
+* Empty/comment/header rows are ignored.
+* DDNA fast mode uses pandas with `on_bad_lines="skip"`; if pandas cannot parse
+  the file, the reader falls back to the robust line parser.
+* Set `BIOVAULT_FAST_NORMALIZE=1` to keep the fast parser even when
+  `BIOVAULT_WARNINGS_TSV` is set. Without that flag, warning capture uses the
+  robust line parser for fuller row-level diagnostics.
+* Set `BIOVAULT_WARNINGS_TSV=/path/warnings.tsv` to append tolerated row-level
+  parse issues with the raw line where available.
+* Missing or non-finite numeric DDNA `gs`, `baf`, and `lrr` values, including
+  `NaN`, are coerced to missing values and retained when the rest of the row is
+  usable.
+* Missing DDNA genotype values, including `NA`/`N/A`, are normalized to no-call
+  `--`. Vendor rows where the genotype itself is `#N/A` are skipped because the
+  whole assay row is missing.
+* DDNA rows may contain vendor-added trailing columns. The first seven DDNA
+  fields are parsed and extra trailing fields are ignored.
+* Indel-style genotypes `II`, `ID`, `DI`, and `DD` are retained by the
+  normalizer; SNP-only downstream analyses may filter them later.
+* Missing rsids (`.`/`-`/empty) are not warnings. DDNA rows without rsids use a
+  locus key when possible; Illumina rows use extracted rsids, locus-map
+  resolutions, or `chrom:pos`.
+* Illumina vendor unmapped probes (`chrom=0`, empty chrom, or `position<=0`) are
+  silently skipped because these are expected array probes.
+* Invalid chromosomes, invalid positions, invalid genotypes, malformed Illumina
+  rows, and wrong DDNA field counts are skipped and emitted as warnings only
+  when warning capture is enabled.
+* Duplicate Illumina probes collapse by `variant_id/chrom/pos`; conflicting
+  called genotypes become no-call `--`.
+
+File-level problems such as missing files, unreadable paths, empty files, NUL
+bytes, or participant/facet validation belong to the QC wrapper
+(`00_qc_all_files`) rather than this normalizer.
 """
 
 from __future__ import annotations
@@ -27,7 +66,8 @@ CANON = ["variant_id", "rsid", "probe_id", "chrom", "pos", "gt", "gs", "baf", "l
 PIPELINE_CANON = ["rsid", "chrom", "pos", "gt", "gs", "baf", "lrr"]
 DDNA_COLS = ["rsid", "chrom", "pos", "gt", "gs", "baf", "lrr"]
 RS_RE = re.compile(r"rs\d+", re.IGNORECASE)
-NO_CALLS = {"", "-", ".", "N", "n", "0"}
+NO_CALLS = {"", "-", ".", "N", "n", "0", "NA", "na", "N/A", "n/a", "#N/A", "#n/a"}
+VENDOR_MISSING_VALUES = {"#N/A", "#n/a"}
 
 
 def _warning_path() -> str:
@@ -80,7 +120,7 @@ def extract_rsid(value: str) -> str:
 def normalize_gt(a1: str, a2: str | None = None) -> str:
     if a2 is None:
         gt = str(a1).strip().upper()
-        if not gt or all(base in NO_CALLS for base in gt):
+        if gt in NO_CALLS or all(base in NO_CALLS for base in gt):
             return "--"
         return gt
     a1 = str(a1).strip().upper()
@@ -88,6 +128,10 @@ def normalize_gt(a1: str, a2: str | None = None) -> str:
     if a1 in NO_CALLS or a2 in NO_CALLS:
         return "--"
     return f"{a1}{a2}"
+
+
+def is_vendor_missing_value(value: str) -> bool:
+    return str(value).strip() in VENDOR_MISSING_VALUES
 
 
 def clean_chrom(value: str) -> str:
@@ -206,6 +250,7 @@ def finalize_ddna_frame(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["rsid"] = df["rsid"].astype(str).str.strip().str.lstrip("\ufeff")
     df = df[(df["rsid"] != "") & (df["rsid"].str.lower() != "rsid")].copy()
+    df = df[~df["gt"].astype(str).str.strip().map(is_vendor_missing_value)].copy()
     df["rsid"] = df["rsid"].map(canonical_rsid)
     df["chrom"] = df["chrom"].map(clean_chrom)
     df["probe_id"] = df["rsid"]
@@ -231,13 +276,14 @@ def read_ddna_fast(path: str | Path) -> pd.DataFrame:
     df = pd.read_csv(
         path,
         sep="\t",
-        comment="#",
         header=None,
         names=["rsid", "chrom", "pos", "gt", "gs", "baf", "lrr"],
+        usecols=list(range(7)),
         dtype={"rsid": str, "chrom": str, "pos": str, "gt": str},
         na_filter=False,
         engine="c",
         low_memory=False,
+        on_bad_lines="skip",
     )
     return finalize_ddna_frame(df)
 
@@ -253,16 +299,16 @@ def read_ddna_robust(path: str | Path) -> pd.DataFrame:
             lower = [field.strip().lstrip("\ufeff").lower() for field in fields]
             if lower[:7] == DDNA_COLS:
                 continue
-            if len(fields) != 7:
+            if len(fields) < 7:
                 emit_parse_warning(
                     path,
                     line_no,
                     "DDNA_FIELD_COUNT",
-                    f"expected 7 tab-separated fields, found {len(fields)}",
+                    f"expected at least 7 tab-separated fields, found {len(fields)}",
                     line.rstrip("\n").rstrip("\r"),
                 )
                 continue
-            values = [field.strip() for field in fields]
+            values = [field.strip() for field in fields[:7]]
             _rsid, chrom, pos, gt, _gs, _baf, _lrr = values
             chrom_clean = clean_chrom(chrom)
             if chrom_clean == "0":
@@ -277,6 +323,15 @@ def read_ddna_robust(path: str | Path) -> pd.DataFrame:
                 continue
             if pos_i <= 0:
                 continue
+            if is_vendor_missing_value(gt):
+                emit_parse_warning(
+                    path,
+                    line_no,
+                    "DDNA_VENDOR_NO_CALL_ROW",
+                    "DDNA row has vendor #N/A genotype and is skipped",
+                    line.rstrip("\n").rstrip("\r"),
+                )
+                continue
             normalized_gt = normalize_gt(gt)
             if not valid_gt(normalized_gt):
                 emit_parse_warning(path, line_no, "INVALID_GENOTYPE", f"invalid genotype: {gt!r}", line.rstrip("\n").rstrip("\r"))
@@ -286,7 +341,7 @@ def read_ddna_robust(path: str | Path) -> pd.DataFrame:
 
 
 def read_ddna(path: str | Path) -> pd.DataFrame:
-    if _warning_path():
+    if _warning_path() and os.environ.get("BIOVAULT_FAST_NORMALIZE", "").lower() not in {"1", "true", "yes"}:
         return read_ddna_robust(path)
     try:
         return read_ddna_fast(path)

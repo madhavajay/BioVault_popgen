@@ -1,8 +1,9 @@
 name: build-biovault-popgen
 
 # Builds the biovault-popgen image and publishes it to GHCR on merge to
-# main (or manual dispatch). Tags: <version>, latest, sha-<short>,
-# <version>-fast, fast, sha-<short>-fast.
+# main (or manual dispatch). Tags:
+#   full amd64 image: <version>, latest, sha-<short>
+#   fast multi-arch image: <version>-fast, fast, sha-<short>-fast
 #
 # IMPORTANT — reference data is NOT regenerated in CI.
 # build_docker.sh can mirror the gnomAD HT and derive the AIMs AF table
@@ -111,6 +112,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Resolve version
         id: ver
         run: |
@@ -126,28 +133,35 @@ jobs:
         env:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
           VERSION: ${{ steps.ver.outputs.version }}
+          BUILD_FAST: "0"
           # Belt & braces: this stays 0 so build_docker.sh's cache-skip
           # logic never triggers the gsutil/Hail/VCF derivations.
           FORCE_REFERENCE_CACHE: "0"
         run: bash build_docker.sh
 
-      - name: Tag + push
+      - name: Tag + push full amd64 image
         run: |
           set -euo pipefail
           V="${{ steps.ver.outputs.version }}"
           S="${{ steps.ver.outputs.sha }}"
           docker tag "${IMAGE_NAME}:${V}" "${IMAGE_NAME}:${S}"
-          docker tag "${IMAGE_NAME}:${V}-fast" "${IMAGE_NAME}:${S}-fast"
           docker push "${IMAGE_NAME}:${V}"
           docker push "${IMAGE_NAME}:latest"
           docker push "${IMAGE_NAME}:${S}"
-          docker push "${IMAGE_NAME}:${V}-fast"
-          docker push "${IMAGE_NAME}:fast"
-          docker push "${IMAGE_NAME}:${S}-fast"
           echo "Published:"
           echo "  ${IMAGE_NAME}:${V}"
           echo "  ${IMAGE_NAME}:latest"
           echo "  ${IMAGE_NAME}:${S}"
-          echo "  ${IMAGE_NAME}:${V}-fast"
-          echo "  ${IMAGE_NAME}:fast"
-          echo "  ${IMAGE_NAME}:${S}-fast"
+
+      - name: Build + push fast multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          target: fast-runtime
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.ver.outputs.version }}-fast
+            ${{ env.IMAGE_NAME }}:fast
+            ${{ env.IMAGE_NAME }}:${{ steps.ver.outputs.sha }}-fast

@@ -39,6 +39,8 @@ RUN mkdir -p /opt/hadoop && \
     wget -q -O "${GCS_CONNECTOR_JAR}" \
       https://storage.googleapis.com/hadoop-lib/gcs/gcs-connector-hadoop3-latest.jar
 
+FROM pgscatalog/plink2:2.00a5.10 AS plink2-bin
+
 FROM tools AS runtime
 
 RUN mkdir -p /opt/biovault/reference/pca_loadings /opt/biovault/reference/aims /opt/biovault/scripts && \
@@ -70,7 +72,7 @@ WORKDIR /work
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["bash"]
 
-FROM condaforge/miniforge3:24.11.3-0 AS fast-tools
+FROM condaforge/miniforge3:25.3.1-0 AS fast-tools
 
 SHELL ["/bin/bash", "-lc"]
 
@@ -89,6 +91,9 @@ RUN apt-get update && \
       gawk \
       gzip \
       less \
+      libblas3 \
+      libgfortran5 \
+      liblapack3 \
       procps \
       sed \
       time \
@@ -105,6 +110,8 @@ FROM fast-tools AS fast-runtime
 
 RUN mkdir -p /opt/biovault/reference/pca_loadings /opt/biovault/reference/aims /opt/biovault/scripts && \
     chmod 666 /etc/passwd /etc/group
+
+COPY --from=plink2-bin /usr/local/bin/plink2 /usr/local/bin/plink2
 
 COPY .docker/reference/pca_loadings/loadings.npz ${LOADINGS_NPZ}
 COPY .docker/reference/aims/gnomad_af_per_locus.tsv /opt/biovault/reference/aims/gnomad_af_per_locus.tsv

@@ -2,7 +2,7 @@ apiVersion: syftbox.openmined.org/v1alpha1
 kind: Flow
 metadata:
   name: 00_bv_paper_qc_all_files
-  version: 0.1.3
+  version: 0.1.4
 spec:
   inputs:
     samplesheet:
@@ -16,6 +16,8 @@ spec:
         file_summary: File(file_summary.tsv)
         issues: File(issues.tsv)
         errors: File(errors.tsv)
+        file_errors: File(file_errors.tsv)
+        row_errors: File(row_errors.tsv)
         warnings: File(warnings.tsv)
         quality_issues: File(quality_issues.tsv)
         summary_json: File(summary.json)

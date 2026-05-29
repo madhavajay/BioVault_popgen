@@ -15,6 +15,7 @@ import logging
 import math
 import os
 import sys
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
@@ -31,7 +32,8 @@ from tools import genotype_normalizer as geno  # noqa: E402
 
 DDNA_COLS = ["rsid", "chrom", "pos", "gt", "gs", "baf", "lrr"]
 VALID_CHROMS = {str(i) for i in range(1, 23)} | {"X", "Y", "M", "MT"}
-NO_CALLS = {"", "-", "--", ".", "0", "00", "N", "NN"}
+NO_CALLS = {"", "-", "--", ".", "0", "00", "N", "NN", "NA", "N/A", "#N/A"}
+VENDOR_MISSING_VALUES = {"#N/A"}
 VALID_BASES = set("ACGT")
 VALID_CHROMS_WITH_PAR = VALID_CHROMS | {"XY"}
 INDEL_BASES = set("ID")
@@ -85,6 +87,29 @@ class FacetValue:
 
 
 MISSING_FACET_VALUES = {"", "na", "n/a", "null", "none", "nan", "."}
+FILE_ERROR_CODES = {
+    "FILE_NOT_FOUND",
+    "NOT_A_FILE",
+    "FILE_NOT_READABLE",
+    "FILE_EMPTY",
+    "NO_DATA_ROWS",
+    "READ_EXCEPTION",
+    "SNIFF_EXCEPTION",
+    "NORMALIZER_EXCEPTION",
+    "UNEXPECTED_QC_EXCEPTION",
+    "QC_PROCESS_EXIT",
+    "ILLUMINA_MISSING_COLUMNS",
+    "ILLUMINA_NO_HEADER",
+    "ILLUMINA_NO_DATA_SECTION",
+}
+ROW_ERROR_WARNING_CODES = {
+    "DDNA_FIELD_COUNT",
+    "MALFORMED_ILLUMINA_ROW",
+    "INVALID_CHROM",
+    "INVALID_POSITION",
+    "INVALID_GENOTYPE",
+    "MISSING_GENOTYPE",
+}
 
 
 def report_line(line: str) -> str:
@@ -149,6 +174,10 @@ def gt_class(value: str) -> str:
     if len(gt) == 2 and all(base in VALID_BASES | INDEL_BASES for base in gt) and any(base in INDEL_BASES for base in gt):
         return "indel"
     return "invalid"
+
+
+def is_vendor_missing_value(value: str) -> bool:
+    return str(value).strip().upper() in VENDOR_MISSING_VALUES
 
 
 def setup_logging(output_dir: Path) -> logging.Logger:
@@ -228,16 +257,19 @@ def validate_ddna(rec: InputRecord) -> tuple[int, list[Issue]]:
                 if lower[:7] == DDNA_COLS:
                     if fields[0].startswith("\ufeff"):
                         issues.append(issue(rec, "ddna", line_number, "WARNING", "UTF8_BOM", "header starts with UTF-8 BOM", line))
-                    if len(fields) != 7:
-                        issues.append(issue(rec, "ddna", line_number, "ERROR", "DDNA_HEADER_FIELD_COUNT", "DDNA header has extra or missing fields", line))
+                    if len(fields) < 7:
+                        issues.append(issue(rec, "ddna", line_number, "ERROR", "DDNA_HEADER_FIELD_COUNT", "DDNA header is missing required fields", line))
                     continue
                 raw_rows += 1
-                if len(fields) != 7:
+                if len(fields) < 7:
                     if len(fields) == 1 and "," in fields[0]:
                         issues.append(issue(rec, "ddna", line_number, "ERROR", "POSSIBLE_CSV", "expected tab-delimited DDNA, but line looks comma-delimited", line))
-                    issues.append(issue(rec, "ddna", line_number, "ERROR", "DDNA_FIELD_COUNT", f"expected 7 tab-separated fields, found {len(fields)}", line))
+                    issues.append(issue(rec, "ddna", line_number, "ERROR", "DDNA_FIELD_COUNT", f"expected at least 7 tab-separated fields, found {len(fields)}", line))
                     continue
-                rsid, chrom, pos, gt, gs, baf, lrr = [field.strip() for field in fields]
+                rsid, chrom, pos, gt, gs, baf, lrr = [field.strip() for field in fields[:7]]
+                if is_vendor_missing_value(gt):
+                    issues.append(issue(rec, "ddna", line_number, "QUALITY", "DDNA_VENDOR_NO_CALL_ROW", "DDNA row has vendor #N/A genotype and is skipped", line))
+                    continue
                 rsid_missing = rsid in {"", ".", "-"}
                 chrom_clean = clean_chrom(chrom)
                 if chrom_clean == "0":
@@ -366,18 +398,96 @@ def validate_illumina(rec: InputRecord) -> tuple[int, list[Issue]]:
     return raw_rows, issues
 
 
-def normalize_file(rec: InputRecord) -> tuple[int, int, list[Issue]]:
+def count_raw_rows_fast(rec: InputRecord, detected: str) -> int:
+    raw_rows = 0
+    if detected == "illumina":
+        in_data = False
+        saw_header = False
+        with rec.path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not in_data:
+                    if stripped == "[Data]":
+                        in_data = True
+                    continue
+                if not stripped:
+                    continue
+                if not saw_header:
+                    saw_header = True
+                    continue
+                raw_rows += 1
+        return raw_rows
+
+    with rec.path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            fields = line.rstrip("\n").rstrip("\r").split("\t")
+            lower = [field.strip().lstrip("\ufeff").lower() for field in fields]
+            if lower[:7] == DDNA_COLS:
+                continue
+            raw_rows += 1
+    return raw_rows
+
+
+def read_normalizer_warnings(path: Path, rec: InputRecord, detected: str) -> list[Issue]:
+    if not path.exists() or path.stat().st_size == 0:
+        return []
+    out: list[Issue] = []
+    with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        for row in reader:
+            code = (row.get("code") or "NORMALIZER_WARNING").strip()
+            severity = "ERROR" if code in ROW_ERROR_WARNING_CODES else "WARNING"
+            try:
+                line_no = int(row.get("line_no") or 0)
+            except ValueError:
+                line_no = 0
+            out.append(issue(
+                rec,
+                detected,
+                line_no,
+                severity,
+                code,
+                row.get("message") or "",
+                row.get("raw_line") or "",
+            ))
+    return out
+
+
+def normalize_file(rec: InputRecord, detected: str) -> tuple[int, int, list[Issue]]:
+    old_warnings = os.environ.get("BIOVAULT_WARNINGS_TSV")
+    old_fast = os.environ.get("BIOVAULT_FAST_NORMALIZE")
+    warning_file = tempfile.NamedTemporaryFile(prefix="biovault_qc_warnings_", suffix=".tsv", delete=False)
+    warning_path = Path(warning_file.name)
+    warning_file.close()
     try:
+        os.environ["BIOVAULT_WARNINGS_TSV"] = str(warning_path)
+        os.environ["BIOVAULT_FAST_NORMALIZE"] = "1"
         df = geno.read_genotypes(rec.path)
         rows = int(len(df))
         unique = int(df["variant_id"].nunique(dropna=True)) if rows else 0
-        issues: list[Issue] = []
+        issues = read_normalizer_warnings(warning_path, rec, detected)
         return rows, unique, issues
     except Exception as exc:
         return 0, 0, [issue(rec, "unknown", 0, "ERROR", "NORMALIZER_EXCEPTION", f"{type(exc).__name__}: {exc}")]
+    finally:
+        if old_warnings is None:
+            os.environ.pop("BIOVAULT_WARNINGS_TSV", None)
+        else:
+            os.environ["BIOVAULT_WARNINGS_TSV"] = old_warnings
+        if old_fast is None:
+            os.environ.pop("BIOVAULT_FAST_NORMALIZE", None)
+        else:
+            os.environ["BIOVAULT_FAST_NORMALIZE"] = old_fast
+        try:
+            warning_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
-def qc_one(rec: InputRecord, logger: logging.Logger) -> tuple[FileSummary, list[Issue]]:
+def qc_one(rec: InputRecord, logger: logging.Logger, full_diagnostics: bool = False) -> tuple[FileSummary, list[Issue]]:
     all_issues: list[Issue] = []
     facet_count, facet_missing_count, missing_facets, facets_json = facet_summary(rec)
     logger.info(
@@ -411,17 +521,30 @@ def qc_one(rec: InputRecord, logger: logging.Logger) -> tuple[FileSummary, list[
         detected = "unknown"
         all_issues.append(issue(rec, detected, 0, "ERROR", "SNIFF_EXCEPTION", f"{type(exc).__name__}: {exc}"))
 
-    if detected == "illumina":
-        raw_rows, raw_issues = validate_illumina(rec)
-    else:
-        detected = "ddna" if detected != "unknown" else detected
-        raw_rows, raw_issues = validate_ddna(rec)
-    all_issues.extend(raw_issues)
+    detected = detected if detected == "illumina" else ("ddna" if detected != "unknown" else detected)
+    try:
+        raw_rows = count_raw_rows_fast(rec, detected)
+    except Exception as exc:
+        raw_rows = 0
+        all_issues.append(issue(rec, detected, 0, "ERROR", "READ_EXCEPTION", f"{type(exc).__name__}: {exc}"))
 
-    normalized_rows, unique_variants, norm_issues = normalize_file(rec)
+    normalized_rows, unique_variants, norm_issues = normalize_file(rec, detected)
     for norm_issue in norm_issues:
         norm_issue.detected_format = detected
     all_issues.extend(norm_issues)
+
+    run_diagnostics = (
+        full_diagnostics
+        or normalized_rows == 0
+        or (detected == "ddna" and raw_rows != normalized_rows)
+        or any(item.code in FILE_ERROR_CODES for item in all_issues)
+    )
+    if run_diagnostics:
+        if detected == "illumina":
+            raw_rows, raw_issues = validate_illumina(rec)
+        else:
+            raw_rows, raw_issues = validate_ddna(rec)
+        all_issues.extend(raw_issues)
 
     errors = sum(1 for item in all_issues if item.severity == "ERROR")
     warnings = sum(1 for item in all_issues if item.severity == "WARNING")
@@ -483,11 +606,23 @@ def percent(numerator: int, denominator: int) -> float:
     return round((numerator / denominator) * 100.0, 2)
 
 
+def split_error_frames(issue_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if issue_df.empty:
+        return issue_df.copy(), issue_df.copy()
+    errors = issue_df[issue_df["severity"] == "ERROR"].copy()
+    line_numbers = pd.to_numeric(errors["line_number"], errors="coerce").fillna(0)
+    file_mask = (line_numbers <= 0) | errors["code"].isin(FILE_ERROR_CODES)
+    return errors[file_mask].copy(), errors[~file_mask].copy()
+
+
 def build_run_report(summaries: list[FileSummary], issue_df: pd.DataFrame) -> tuple[str, dict[str, int | float]]:
     files_checked = len(summaries)
-    files_with_errors = sum(1 for row in summaries if row.errors > 0)
+    file_errors, row_errors = split_error_frames(issue_df)
+    files_with_file_errors = int(file_errors["file"].nunique()) if not file_errors.empty else 0
+    files_with_row_errors = int(row_errors["file"].nunique()) if not row_errors.empty else 0
+    total_row_error_rows = int(len(row_errors[["file", "line_number"]].drop_duplicates())) if not row_errors.empty else 0
     files_with_missing_facets = sum(1 for row in summaries if row.facet_missing_count > 0)
-    usable_files = files_checked - files_with_errors
+    usable_files = files_checked - files_with_file_errors
 
     warning_rows_df = issue_df[
         (issue_df["severity"] == "WARNING") & (pd.to_numeric(issue_df["line_number"], errors="coerce").fillna(0) > 0)
@@ -497,11 +632,14 @@ def build_run_report(summaries: list[FileSummary], issue_df: pd.DataFrame) -> tu
     total_warning_rows = int(len(warning_row_keys))
 
     raw_rows_total = sum(int(row.raw_rows) for row in summaries)
-    usable_rows = sum(int(row.normalized_rows) for row in summaries if row.errors == 0)
+    file_error_files = set(file_errors["file"].tolist()) if not file_errors.empty else set()
+    usable_rows = sum(int(row.normalized_rows) for row in summaries if row.file not in file_error_files)
 
     metrics = {
         "files_checked": files_checked,
-        "files_with_errors": files_with_errors,
+        "files_with_file_errors": files_with_file_errors,
+        "files_with_row_errors": files_with_row_errors,
+        "total_row_error_rows": total_row_error_rows,
         "files_with_warning_rows": files_with_warning_rows,
         "total_warning_rows": total_warning_rows,
         "files_with_missing_facets": files_with_missing_facets,
@@ -510,7 +648,9 @@ def build_run_report(summaries: list[FileSummary], issue_df: pd.DataFrame) -> tu
     }
     report = "\n".join([
         f"{metrics['files_checked']} number of files checked",
-        f"{metrics['files_with_errors']} files with errors (unusable file)",
+        f"{metrics['files_with_file_errors']} files with file errors (unusable file)",
+        f"{metrics['files_with_row_errors']} files with row errors (bad rows skipped)",
+        f"{metrics['total_row_error_rows']} total row error rows",
         f"{metrics['files_with_warning_rows']} files with warning rows",
         f"{metrics['total_warning_rows']} total warning rows",
         f"{metrics['files_with_missing_facets']} files with missing facets",
@@ -528,6 +668,9 @@ def write_reports(output_dir: Path, records: list[InputRecord], summaries: list[
     issue_df = pd.DataFrame(issue_rows, columns=issue_cols)
     issue_df.to_csv(output_dir / "issues.tsv", sep="\t", index=False)
     issue_df[issue_df["severity"] == "ERROR"].to_csv(output_dir / "errors.tsv", sep="\t", index=False)
+    file_errors, row_errors = split_error_frames(issue_df)
+    file_errors.to_csv(output_dir / "file_errors.tsv", sep="\t", index=False)
+    row_errors.to_csv(output_dir / "row_errors.tsv", sep="\t", index=False)
     issue_df[issue_df["severity"] == "WARNING"].to_csv(output_dir / "warnings.tsv", sep="\t", index=False)
     issue_df[issue_df["severity"] == "QUALITY"].to_csv(output_dir / "quality_issues.tsv", sep="\t", index=False)
     write_facet_reports(output_dir, records, logger)
@@ -554,6 +697,7 @@ def main() -> int:
     parser.add_argument("--samplesheet", type=Path, help="CSV/TSV containing genotype_file and optional participant_id columns")
     parser.add_argument("--output-dir", type=Path, default=Path("00_qc_all_files/results"))
     parser.add_argument("--fail-on-issues", action="store_true", help="Exit 1 when any file has an ERROR")
+    parser.add_argument("--full-diagnostics", action="store_true", help="Run the slower line-by-line validator for every readable file")
     args = parser.parse_args()
 
     logger = setup_logging(args.output_dir)
@@ -571,7 +715,7 @@ def main() -> int:
     logger.info("Scanning %d input records", len(records))
     for rec in records:
         try:
-            summary, rec_issues = qc_one(rec, logger)
+            summary, rec_issues = qc_one(rec, logger, full_diagnostics=args.full_diagnostics)
         except Exception as exc:
             logger.exception("Unexpected QC exception for %s", rec.path)
             rec_issues = [issue(rec, "unknown", 0, "ERROR", "UNEXPECTED_QC_EXCEPTION", f"{type(exc).__name__}: {exc}")]

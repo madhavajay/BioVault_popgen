@@ -29,9 +29,17 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+import sys
 
 import numpy as np
 import pandas as pd
+
+for _parent in Path(__file__).resolve().parents:
+    if (_parent / "tools" / "genotype_normalizer.py").exists():
+        sys.path.insert(0, str(_parent))
+        break
+sys.path.append("/opt/biovault")
+from tools import genotype_normalizer as _genoio  # noqa: E402
 
 
 AUTOSOMES = [str(c) for c in range(1, 23)]
@@ -55,16 +63,9 @@ def load_loadings(path):
 
 
 def compute_dosage(txt_path, key_to_idx, ref_arr, alt_arr, n_var, min_gs):
-    df = pd.read_csv(
-        txt_path, sep="\t", header=None, comment="#",
-        names=["rsid", "chrom", "pos", "gt", "gs", "baf", "lrr"],
-        usecols=["chrom", "pos", "gt", "gs"],
-        dtype={"chrom": str, "pos": str, "gt": str, "gs": str},
-        engine="c", na_filter=False,
-    )
-    df = df[df["rsid"] != "rsid"] if "rsid" in df.columns else df
+    df = _genoio.read_pipeline_genotypes(txt_path)
     df["pos"] = pd.to_numeric(df["pos"], errors="coerce")
-    df["gs"] = pd.to_numeric(df["gs"], errors="coerce")
+    df["gs"] = pd.to_numeric(df["gs"], errors="coerce").fillna(1.0)
     df = df[df["pos"].notna() & df["gs"].notna()]
     df["pos"] = df["pos"].astype(np.int64)
     df = df[df["chrom"].isin(AUTOSOMES)]

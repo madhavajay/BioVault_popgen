@@ -56,36 +56,41 @@ BASES_S1 = np.frombuffer(b"ACGT", dtype="S1")
 BASE_CODE = {b"A": 1, b"C": 2, b"G": 3, b"T": 4}
 
 
-def read_ddna_fast(path: str, min_gs: float):
-    """Return (rsid, chrom_bytes, pos, gt_bytes) numpy arrays for one DDNA TXT.
+def _contains_nul(path: str) -> bool:
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                return False
+            if b"\x00" in chunk:
+                return True
 
-    Filtered to: autosomes 1..22, gs >= min_gs, len(gt)==2 with both bases in
-    ACGT. Bytes dtype (S1/S2) is used throughout for cheap allele ops.
+
+def read_ddna_fast(path: str, min_gs: float):
+    """Return normalized genotype arrays for one supported genotype TXT.
+
+    Parsing is delegated to tools.genotype_normalizer so DDNA/Illumina edge-case
+    handling stays in one place. This function only applies projection-specific
+    filters and byte encodings.
     """
-    if _genoio.sniff_format(path) == "illumina":
-        # GSGT synthetic carries no GenCall score; treat every call as
-        # confident (gs = 1.0) so the gs >= min_gs filter is a no-op.
-        gdf = _genoio.read_pipeline_genotypes(path)
-        rsid = gdf["rsid"].to_numpy(dtype=object)
-        chrom = gdf["chrom"].to_numpy(dtype=object).astype("S2")
-        pos = gdf["pos"].astype("int64").to_numpy()
-        gt = gdf["gt"].to_numpy(dtype=object).astype("S2")
-        gs = np.ones(len(rsid), dtype=np.float32)
-    else:
-        df = pd.read_csv(
-            path, sep="\t", comment="#", header=None,
-            names=["rsid", "chrom", "pos", "gt", "gs", "baf", "lrr"],
-            usecols=["rsid", "chrom", "pos", "gt", "gs"],
-            dtype={"rsid": str, "chrom": str, "pos": str, "gt": str, "gs": str},
-            engine="c", na_filter=False,
+    if _contains_nul(path):
+        raise ValueError("file contains NUL bytes and is not a valid text genotype file")
+
+    df = _genoio.read_pipeline_genotypes(path)
+    if df.empty:
+        return (
+            np.empty(0, dtype=object),
+            np.empty(0, dtype="S2"),
+            np.empty(0, dtype=np.int64),
+            np.empty(0, dtype="S2"),
         )
-        df["pos"] = pd.to_numeric(df["pos"], errors="coerce")
-        df["gs"] = pd.to_numeric(df["gs"], errors="coerce")
-        rsid = df["rsid"].to_numpy(dtype=object)
-        chrom = df["chrom"].to_numpy(dtype=object).astype("S2")
-        pos = df["pos"].to_numpy(dtype=np.float64)
-        gt = df["gt"].to_numpy(dtype=object).astype("S2")
-        gs = df["gs"].to_numpy(dtype=np.float32)
+    df["pos"] = pd.to_numeric(df["pos"], errors="coerce")
+    df["gs"] = pd.to_numeric(df["gs"], errors="coerce").fillna(1.0)
+    rsid = df["rsid"].to_numpy(dtype=object)
+    chrom = df["chrom"].to_numpy(dtype=object).astype("S2")
+    pos = df["pos"].to_numpy(dtype=np.float64)
+    gt = df["gt"].to_numpy(dtype=object).astype("S2")
+    gs = df["gs"].to_numpy(dtype=np.float32)
 
     # Drop rows where rsid == "rsid" (any embedded header row).
     mask = rsid != "rsid"
@@ -179,6 +184,7 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     errors_tsv = os.path.join(out_dir, "errors.tsv")
     warnings_tsv = os.path.join(out_dir, "warnings.tsv")
+    os.environ.setdefault("BIOVAULT_FAST_NORMALIZE", "1")
     os.environ.setdefault("BIOVAULT_WARNINGS_TSV", warnings_tsv)
 
     sample_dirs = sorted(

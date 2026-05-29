@@ -80,6 +80,7 @@ def setup_logging() -> logging.Logger:
 
 log = setup_logging()
 os.environ.setdefault("BIOVAULT_WARNINGS_TSV", str(WARNINGS_TSV))
+os.environ.setdefault("BIOVAULT_FAST_NORMALIZE", "1")
 
 
 def write_errors(rows: list[dict[str, str]]) -> None:
@@ -91,6 +92,26 @@ def write_errors(rows: list[dict[str, str]]) -> None:
                 f"{row['participant_id']}\t{row['file']}\tERROR\t"
                 f"{row['code']}\t{row['message']}\n"
             )
+
+
+def append_error(participant_id: str, file: str, code: str, message: str) -> None:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    if not ERRORS_TSV.exists():
+        write_errors([])
+    with open(ERRORS_TSV, "a", encoding="utf-8") as handle:
+        handle.write(
+            f"{participant_id}\t{file}\tERROR\t{code}\t"
+            f"{message.replace(chr(9), ' ').replace(chr(10), ' ')}\n"
+        )
+
+
+def write_empty_pca_outputs(reason: str) -> None:
+    PCA_DIR.mkdir(parents=True, exist_ok=True)
+    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+    (PCA_DIR / "pca.eigenvec").write_text("", encoding="utf-8")
+    (PCA_DIR / "pca.eigenval").write_text("", encoding="utf-8")
+    append_error("COHORT", str(DATA_DIR), "INSUFFICIENT_USABLE_DATA", reason)
+    log.error(reason)
 
 
 def timed(label: str):
@@ -124,6 +145,10 @@ def discover_samples() -> list[tuple[str, Path]]:
 def read_sample(task: tuple[str, Path]) -> tuple[str, pd.DataFrame]:
     sample_id, path = task
     try:
+        with open(path, "rb") as handle:
+            head = handle.read(65536)
+        if b"\x00" in head:
+            raise ValueError("file contains NUL bytes; refusing binary-like genotype input")
         g = _genoio.read_pipeline_genotypes(path)
         df = g[["rsid", "chrom", "pos", "gt"]].rename(columns={
             "chrom": "chromosome", "pos": "position", "gt": "genotype"})
@@ -174,11 +199,20 @@ def load_and_merge(samples: list[tuple[str, Path]]) -> tuple[pd.DataFrame, pd.Da
         raise RuntimeError("No genotype files could be parsed; see errors.tsv")
 
     loaded.sort(key=lambda item: item[0])
-    snp_info = (
-        loaded[0][1][["rsid", "chromosome", "position"]]
-        .drop_duplicates("rsid")
-        .reset_index(drop=True)
-    )
+    snp_info_frames = [
+        df[["rsid", "chromosome", "position"]]
+        for _sample_id, df in loaded
+        if not df.empty
+    ]
+    if snp_info_frames:
+        snp_info = (
+            pd.concat(snp_info_frames, ignore_index=True)
+            .dropna(subset=["rsid"])
+            .drop_duplicates("rsid")
+            .reset_index(drop=True)
+        )
+    else:
+        snp_info = pd.DataFrame(columns=["rsid", "chromosome", "position"])
 
     with timed("Merging genotype matrix"):
         series = [
@@ -350,17 +384,45 @@ def filter_qc(numeric: pd.DataFrame) -> pd.DataFrame:
 
     with timed("Applying call-rate and MAF filters"):
         mat = numeric
-        snp_missing = mat.isna().mean(axis=1)
         ind_missing = mat.isna().mean(axis=0)
+        sample_fail = ind_missing.index[ind_missing > MIND]
+        n_ind_dropped = int(len(sample_fail))
+        mat = mat.loc[:, ind_missing <= MIND]
 
+        if mat.shape[1] == 0:
+            log.info(
+                "After sample missingness filter: 0 samples retained "
+                "(%d samples dropped by --mind)",
+                n_ind_dropped,
+            )
+            return mat
+
+        snp_missing = mat.isna().mean(axis=1)
         geno_fail = snp_missing.index[snp_missing > GENO]
         _record(geno_fail, "call_rate",
                  call_rate=(1.0 - snp_missing.loc[geno_fail]).to_numpy())
-        n_ind_dropped = int((ind_missing > MIND).sum())
-
-        mat = mat.loc[snp_missing <= GENO, ind_missing <= MIND]
+        mat = mat.loc[snp_missing <= GENO]
 
         values = mat.to_numpy(dtype=np.float64, copy=False)
+        if mat.shape[0] == 0:
+            log.info(
+                "After call-rate filter: 0 SNPs x %s samples "
+                "(call_rate dropped %d, %d samples dropped by --mind)",
+                mat.shape[1],
+                len(geno_fail),
+                n_ind_dropped,
+            )
+            if dropped:
+                allcols = ["rsid", "filter", "n_homref", "n_het", "n_homalt",
+                           "n_missing", "frac_homref", "frac_het", "frac_homalt",
+                           "call_rate", "maf", "hwe_p"]
+                out = pd.concat(dropped, ignore_index=True)
+                for c in allcols:
+                    if c not in out.columns:
+                        out[c] = ""
+                _write_filtered(out[allcols], "w")
+            return mat
+
         alt_freq = np.nanmean(values, axis=1) / 2.0
         maf_vals = pd.Series(np.minimum(alt_freq, 1.0 - alt_freq),
                              index=mat.index)
@@ -423,6 +485,8 @@ def filter_qc(numeric: pd.DataFrame) -> pd.DataFrame:
 
 
 def ld_prune_fast(mat: pd.DataFrame) -> pd.DataFrame:
+    if mat.shape[0] == 0:
+        return mat
     with timed("LD pruning"):
         imputer = SimpleImputer(strategy="mean")
         x = imputer.fit_transform(mat.to_numpy(dtype=np.float64, copy=False).T).T
@@ -463,10 +527,26 @@ def ld_prune_fast(mat: pd.DataFrame) -> pd.DataFrame:
 
 def run_pca(mat: pd.DataFrame) -> None:
     PCA_DIR.mkdir(parents=True, exist_ok=True)
+    if mat.shape[0] == 0:
+        write_empty_pca_outputs(
+            "No SNPs remained after QC filtering; PCA cannot run. "
+            "This usually means there are not enough mutually comparable usable genotype rows across the selected files."
+        )
+        return
+    if mat.shape[1] < 2:
+        write_empty_pca_outputs(
+            f"Only {mat.shape[1]} usable sample(s) remained after QC filtering; PCA requires at least 2."
+        )
+        return
     with timed("Imputing and running PCA"):
         imputer = SimpleImputer(strategy="mean")
         x = imputer.fit_transform(mat.to_numpy(dtype=np.float64, copy=False).T)
         n_pcs = min(N_PCS, x.shape[0] - 1, x.shape[1])
+        if n_pcs < 1:
+            write_empty_pca_outputs(
+                f"Only {x.shape[0]} usable sample(s) and {x.shape[1]} usable SNP(s) remained; PCA requires at least 2 samples and 1 SNP."
+            )
+            return
         pca = PCA(n_components=n_pcs)
         scores = pca.fit_transform(x)
 
@@ -532,6 +612,9 @@ def scatter_pca(df: pd.DataFrame, pc_x: str, pc_y: str, var_exp: list[float], ou
 
 def plot_pca() -> None:
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+    if not (PCA_DIR / "pca.eigenvec").exists() or (PCA_DIR / "pca.eigenvec").stat().st_size == 0:
+        log.warning("PCA plot skipped: no PCA coordinates were produced")
+        return
     with timed("Plotting PCA"):
         df = load_eigenvec()
         var_exp = load_eigenval() if (PCA_DIR / "pca.eigenval").exists() else []
@@ -554,7 +637,26 @@ def main() -> None:
     major_idx, minor_idx, has_observed = infer_major_minor(chars)
     numeric = encode_numeric(matrix, snp_info, chars, major_idx, minor_idx, has_observed)
     qc = filter_qc(numeric)
+    if qc.shape[0] == 0:
+        write_empty_pca_outputs(
+            "No SNPs remained after call-rate/MAF/HWE filtering; PCA cannot run. "
+            f"Input after loading had {numeric.shape[0]} SNPs x {numeric.shape[1]} samples, but the selected files do not have enough shared usable genotype rows."
+        )
+        log.info("Fast pipeline stopped after QC filtering in %.2fs", time.perf_counter() - total)
+        return
+    if qc.shape[1] < 2:
+        write_empty_pca_outputs(
+            f"Only {qc.shape[1]} usable sample(s) remained after sample missingness filtering; PCA requires at least 2."
+        )
+        log.info("Fast pipeline stopped after QC filtering in %.2fs", time.perf_counter() - total)
+        return
     pruned = ld_prune_fast(qc)
+    if pruned.shape[0] == 0:
+        write_empty_pca_outputs(
+            "No SNPs remained after LD pruning; PCA cannot run with the selected files."
+        )
+        log.info("Fast pipeline stopped after LD pruning in %.2fs", time.perf_counter() - total)
+        return
     run_pca(pruned)
     plot_pca()
 

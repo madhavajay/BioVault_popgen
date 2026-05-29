@@ -48,6 +48,7 @@ sba.ERRORS_TSV = sba.LOGS_DIR / "errors.tsv"
 sba.WARNINGS_TSV = sba.LOGS_DIR / "warnings.tsv"
 for _d in (sba.RESULTS_DIR, sba.PLOTS_DIR, sba.LOGS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("BIOVAULT_FAST_NORMALIZE", "1")
 os.environ.setdefault("BIOVAULT_WARNINGS_TSV", str(sba.WARNINGS_TSV))
 
 # Honor BIOVAULT_DATA_DIR so the step runner / flow can point at a sample

@@ -3,11 +3,11 @@
 // Two containers, orchestrated by Nextflow (the desktop runner pre-pulls every
 // per-process `container '...'`):
 //
-//   split_allele_freq  (BIOSYNTH_IMAGE, default ghcr.io/openmined/biosynth:0.1.24)
+//   split_allele_freq  (BIOSYNTH_IMAGE, default ghcr.io/openmined/biosynth:0.1.27)
 //       per-participant `bvs emit-long`, then per-country `bvs aggregate-long`
 //       -> allele_freq_<country_norm>.tsv
 //
-//   population_fst_aims  (ghcr.io/madhavajay/biovault-popgen:0.1.3-fast)
+//   population_fst_aims  (ghcr.io/madhavajay/biovault-popgen:0.1.4-fast)
 //       FST (load/merge -> WC84 -> visualise) then AIMs (merge w/ bundled
 //       gnomAD ref -> differential SNPs -> AIMs panels)
 //
@@ -23,7 +23,7 @@
 
 nextflow.enable.dsl=2
 
-def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.24'
+def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.27'
 
 def normalizeCountry(String raw) {
     return (raw ?: '')
@@ -194,7 +194,7 @@ process split_allele_freq {
 }
 
 process population_fst_aims {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.3-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.4-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy { params.nextflow.error_strategy }

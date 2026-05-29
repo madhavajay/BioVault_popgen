@@ -21,6 +21,12 @@ def shellQuote(value) {
     return "'" + value.toString().replace("'", "'\"'\"'") + "'"
 }
 
+def qcBatchSize() {
+    def raw = params.qc_batch_size ?: 50
+    def size = raw as int
+    return size > 0 ? size : 50
+}
+
 workflow USER {
     take:
         context
@@ -64,6 +70,16 @@ workflow USER {
             .map { pid, pathText, status, message, facets ->
                 tuple(pid, file(pathText), facets)
             }
+            .collect(flat: false)
+            .flatMap { items ->
+                items.collate(qcBatchSize()).collect { batch ->
+                    tuple(
+                        batch.collect { it[0] },
+                        batch.collect { it[1] },
+                        batch.collect { it[2] }
+                    )
+                }
+            }
 
         def invalidRecords = counted
             .flatMap { items -> items.findAll { it[2] != 'ok' } }
@@ -71,7 +87,7 @@ workflow USER {
                 tuple(pid, pathText, status, message, facets)
             }
 
-        def validQc = qc_one_file(validRecords)
+        def validQc = qc_file_batch(validRecords)
         def invalidQc = qc_input_issue(invalidRecords)
         def qc = merge_qc_reports(validQc.report_dir.mix(invalidQc.report_dir).collect(flat: false))
 
@@ -79,6 +95,8 @@ workflow USER {
         file_summary = qc.file_summary
         issues = qc.issues
         errors = qc.errors
+        file_errors = qc.file_errors
+        row_errors = qc.row_errors
         warnings = qc.warnings
         quality_issues = qc.quality_issues
         summary_json = qc.summary_json
@@ -88,27 +106,33 @@ workflow USER {
         pipeline_log = qc.pipeline_log
 }
 
-process qc_one_file {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.3-fast'
+process qc_file_batch {
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.4-fast'
     stageInMode 'symlink'
     errorStrategy { params.nextflow.error_strategy }
     maxRetries { params.nextflow.max_retries }
 
     input:
-        tuple val(participant_id), path(genotype_file), val(facets)
+        tuple val(participant_ids), path(genotype_files), val(facet_maps)
 
     output:
         path "${prefix}", emit: report_dir
 
     script:
-    prefix = "${safeDir(participant_id)}_${Math.abs(genotype_file.getName().hashCode())}"
-    def participantDir = safeDir(participant_id)
-    def facetNames = facets.keySet().collect { it.toString() }.sort()
+    prefix = "batch_${task.index}"
+    def facetNames = facet_maps.collectMany { it.keySet().collect { key -> key.toString() } }.unique().sort()
     def header = ['participant_id', 'genotype_file'] + facetNames
     def rows = [header.collect { csvCell(it) }.join(',')]
-    def staged = "input/${participantDir}/${genotype_file.getName()}"
-    def values = [participant_id, staged] + facetNames.collect { name -> facets[name] ?: '' }
-    rows << values.collect { csvCell(it) }.join(',')
+    def staging = []
+    participant_ids.eachWithIndex { participant_id, idx ->
+        def participantDir = safeDir(participant_id)
+        def genotype_file = genotype_files[idx]
+        def facets = facet_maps[idx]
+        def staged = "input/${participantDir}/${genotype_file.getName()}"
+        def values = [participant_id, staged] + facetNames.collect { name -> facets[name] ?: '' }
+        rows << values.collect { csvCell(it) }.join(',')
+        staging << "mkdir -p ${shellQuote(prefix)}/input/${shellQuote(participantDir)} && ln -s ../../../${shellQuote(genotype_file.getName())} ${shellQuote(prefix)}/${shellQuote(staged)}"
+    }
     def samplesheetText = rows.join("\n")
     def samplesheetShell = samplesheetText.replace("'", "'\"'\"'")
     """
@@ -124,8 +148,8 @@ process qc_one_file {
     fi
     export HOME=/tmp
 
-    mkdir -p ${shellQuote(prefix)}/input/${shellQuote(participantDir)} ${shellQuote(prefix)}/qc_output
-    ln -s ../../../${shellQuote(genotype_file.getName())} ${shellQuote(prefix)}/${shellQuote(staged)}
+    mkdir -p ${shellQuote(prefix)}/qc_output
+    ${staging.join('\n    ')}
 
     printf '%s\\n' '${samplesheetShell}' > ${shellQuote(prefix)}/selected_participants.csv
 
@@ -137,16 +161,18 @@ process qc_one_file {
     set -e
 
     if [ "\${qc_status}" -ne 0 ] && [ ! -s ${shellQuote(prefix)}/qc_output/file_summary.tsv ]; then
-        echo "QC script exited \${qc_status} for participant ${participant_id}; creating diagnostic fallback outputs" >&2
+        echo "QC script exited \${qc_status} for batch ${prefix}; creating diagnostic fallback outputs" >&2
         {
             printf 'participant_id\\tfile\\tsource\\tdetected_format\\tstatus\\treadable\\traw_rows\\tnormalized_rows\\tunique_variants\\tfacet_count\\tfacet_missing_count\\tmissing_facets\\tfacets_json\\terrors\\twarnings\\tmessage\\n'
-            printf '%s\\t%s\\tnextflow\\tunknown\\tFAIL\\tTrue\\t0\\t0\\t0\\t0\\t0\\t\\t{}\\t1\\t0\\tQC script exited before writing normal reports\\n' '${participant_id}' '${staged}'
+            printf '%s\\t%s\\tnextflow\\tunknown\\tFAIL\\tTrue\\t0\\t0\\t0\\t0\\t0\\t\\t{}\\t1\\t0\\tQC script exited before writing normal reports\\n' '${prefix}' '${prefix}'
         } > ${shellQuote(prefix)}/qc_output/file_summary.tsv
         {
             printf 'participant_id\\tfile\\tdetected_format\\tline_number\\tseverity\\tcode\\tmessage\\tline\\n'
-            printf '%s\\t%s\\tunknown\\t0\\tERROR\\tQC_PROCESS_EXIT\\tqc_all_files.py exited with status %s before writing normal reports\\t\\n' '${participant_id}' '${staged}' "\${qc_status}"
+            printf '%s\\t%s\\tunknown\\t0\\tERROR\\tQC_PROCESS_EXIT\\tqc_all_files.py exited with status %s before writing normal reports\\t\\n' '${prefix}' '${prefix}' "\${qc_status}"
         } > ${shellQuote(prefix)}/qc_output/issues.tsv
         cp ${shellQuote(prefix)}/qc_output/issues.tsv ${shellQuote(prefix)}/qc_output/errors.tsv
+        cp ${shellQuote(prefix)}/qc_output/issues.tsv ${shellQuote(prefix)}/qc_output/file_errors.tsv
+        printf 'participant_id\\tfile\\tdetected_format\\tline_number\\tseverity\\tcode\\tmessage\\tline\\n' > ${shellQuote(prefix)}/qc_output/row_errors.tsv
         printf 'participant_id\\tfile\\tdetected_format\\tline_number\\tseverity\\tcode\\tmessage\\tline\\n' > ${shellQuote(prefix)}/qc_output/warnings.tsv
         printf 'participant_id\\tfile\\tdetected_format\\tline_number\\tseverity\\tcode\\tmessage\\tline\\n' > ${shellQuote(prefix)}/qc_output/quality_issues.tsv
         printf '{\\n  "files": 1,\\n  "pass": 0,\\n  "warn": 0,\\n  "fail": 1,\\n  "errors": 1,\\n  "warnings": 0,\\n  "quality_issues": 0,\\n  "facets": [],\\n  "facet_missing_values": 0\\n}\\n' > ${shellQuote(prefix)}/qc_output/summary.json
@@ -158,6 +184,8 @@ process qc_one_file {
     cp ${shellQuote(prefix)}/qc_output/file_summary.tsv ${shellQuote(prefix)}/file_summary.tsv
     cp ${shellQuote(prefix)}/qc_output/issues.tsv ${shellQuote(prefix)}/issues.tsv
     cp ${shellQuote(prefix)}/qc_output/errors.tsv ${shellQuote(prefix)}/errors.tsv
+    cp ${shellQuote(prefix)}/qc_output/file_errors.tsv ${shellQuote(prefix)}/file_errors.tsv
+    cp ${shellQuote(prefix)}/qc_output/row_errors.tsv ${shellQuote(prefix)}/row_errors.tsv
     cp ${shellQuote(prefix)}/qc_output/warnings.tsv ${shellQuote(prefix)}/warnings.tsv
     cp ${shellQuote(prefix)}/qc_output/quality_issues.tsv ${shellQuote(prefix)}/quality_issues.tsv
         cp ${shellQuote(prefix)}/qc_output/summary.json ${shellQuote(prefix)}/summary.json
@@ -169,7 +197,7 @@ process qc_one_file {
 }
 
 process qc_input_issue {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.3-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.4-fast'
     errorStrategy { params.nextflow.error_strategy }
     maxRetries { params.nextflow.max_retries }
 
@@ -201,6 +229,8 @@ process qc_input_issue {
     cp ${shellQuote(prefix)}/qc_output/file_summary.tsv ${shellQuote(prefix)}/file_summary.tsv
     cp ${shellQuote(prefix)}/qc_output/issues.tsv ${shellQuote(prefix)}/issues.tsv
     cp ${shellQuote(prefix)}/qc_output/errors.tsv ${shellQuote(prefix)}/errors.tsv
+    cp ${shellQuote(prefix)}/qc_output/file_errors.tsv ${shellQuote(prefix)}/file_errors.tsv
+    cp ${shellQuote(prefix)}/qc_output/row_errors.tsv ${shellQuote(prefix)}/row_errors.tsv
     cp ${shellQuote(prefix)}/qc_output/warnings.tsv ${shellQuote(prefix)}/warnings.tsv
     cp ${shellQuote(prefix)}/qc_output/quality_issues.tsv ${shellQuote(prefix)}/quality_issues.tsv
     cp ${shellQuote(prefix)}/qc_output/summary.json ${shellQuote(prefix)}/summary.json
@@ -212,7 +242,7 @@ process qc_input_issue {
 }
 
 process merge_qc_reports {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.3-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.4-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     errorStrategy { params.nextflow.error_strategy }
     maxRetries { params.nextflow.max_retries }
@@ -224,6 +254,8 @@ process merge_qc_reports {
         path "file_summary.tsv",  emit: file_summary
         path "issues.tsv",        emit: issues
         path "errors.tsv",        emit: errors
+        path "file_errors.tsv",   emit: file_errors
+        path "row_errors.tsv",    emit: row_errors
         path "warnings.tsv",      emit: warnings
         path "quality_issues.tsv", emit: quality_issues
         path "summary.json",      emit: summary_json
@@ -250,6 +282,8 @@ process merge_qc_reports {
     cp merged/file_summary.tsv file_summary.tsv
     cp merged/issues.tsv issues.tsv
     cp merged/errors.tsv errors.tsv
+    cp merged/file_errors.tsv file_errors.tsv
+    cp merged/row_errors.tsv row_errors.tsv
     cp merged/warnings.tsv warnings.tsv
     cp merged/quality_issues.tsv quality_issues.tsv
     cp merged/summary.json summary.json

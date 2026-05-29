@@ -2,7 +2,7 @@ apiVersion: syftbox.openmined.org/v1alpha1
 kind: Module
 metadata:
   name: 00_bv_paper_qc_all_files
-  version: 0.1.3
+  version: 0.1.4
   authors:
     - madhava@openmined.org
   description: |
@@ -14,7 +14,7 @@ spec:
     kind: nextflow
     entrypoint: main.nf
     template: dynamic-nextflow
-    image: ghcr.io/madhavajay/biovault-popgen:0.1.3-fast
+    image: ghcr.io/madhavajay/biovault-popgen:0.1.4-fast
   inputs:
     - name: participants
       type: List[GenotypeRecord]
@@ -39,10 +39,22 @@ spec:
       path: issues.tsv
     - name: errors
       type: File
-      description: Hard QC errors that may prevent downstream pipelines from running safely.
+      description: Combined hard QC errors, including file-level blockers and row-level errors.
       format:
         kind: tsv
       path: errors.tsv
+    - name: file_errors
+      type: File
+      description: File-level blockers that make a genotype file unusable.
+      format:
+        kind: tsv
+      path: file_errors.tsv
+    - name: row_errors
+      type: File
+      description: Row-level errors for bad genotype rows that can be skipped while retaining the rest of the file.
+      format:
+        kind: tsv
+      path: row_errors.tsv
     - name: warnings
       type: File
       description: Suspicious but non-blocking QC warnings.
