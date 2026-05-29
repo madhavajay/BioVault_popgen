@@ -65,10 +65,10 @@ workflow USER {
 }
 
 process pca_qc_fast {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.4-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.6-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
-    errorStrategy { params.nextflow.error_strategy }
+    errorStrategy 'terminate'
     maxRetries { params.nextflow.max_retries }
 
     input:
@@ -120,7 +120,32 @@ process pca_qc_fast {
     conda activate biovault_popgen
 
     export BIOVAULT_DATA_DIR="\${PWD}/input"
+    set +e
     python3 pca_qc_fast/scripts/fast_pipeline.py
+    status=\$?
+    set -e
+    if [ "\${status}" -ne 0 ]; then
+        mkdir -p pca_qc_fast/logs
+        reason="pca_qc_fast failed with exit \${status}"
+        if [ "\${status}" -eq 137 ]; then
+            reason="pca_qc_fast was killed with exit 137; this usually means Docker/macOS ran out of memory while processing the compact genotype matrix. Increase Docker memory, reduce selected files, or lower BV_CHUNK_VARIANTS."
+        fi
+        {
+            printf '%s\\n' "\${reason}"
+            printf 'work_dir\\t%s\\n' "\${PWD}"
+            printf 'input_dir\\t%s\\n' "\${BIOVAULT_DATA_DIR}"
+        } > pca_qc_fast/logs/failure_summary.txt
+        if [ ! -f pca_qc_fast/logs/errors.tsv ]; then
+            printf 'participant_id\\tfile\\tseverity\\tcode\\tmessage\\n' > pca_qc_fast/logs/errors.tsv
+        fi
+        printf 'COHORT\\t%s\\tERROR\\tPIPELINE_FAILED\\t%s\\n' "\${BIOVAULT_DATA_DIR}" "\${reason}" >> pca_qc_fast/logs/errors.tsv
+        [ -f pca_qc_fast/logs/fast_pipeline.log ] && printf '\\nERROR: %s\\n' "\${reason}" >> pca_qc_fast/logs/fast_pipeline.log
+        cp pca_qc_fast/logs/failure_summary.txt failure_summary.txt
+        cp pca_qc_fast/logs/errors.tsv errors.tsv
+        [ -f pca_qc_fast/logs/fast_pipeline.log ] && cp pca_qc_fast/logs/fast_pipeline.log fast_pipeline.log || true
+        echo "ERROR: \${reason}" >&2
+        exit "\${status}"
+    fi
 
     # Hoist final artefacts to the process root so publishDir picks them up.
     cp pca_qc_fast/data/pca/pca.eigenvec       pca.eigenvec

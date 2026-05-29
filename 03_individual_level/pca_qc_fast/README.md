@@ -2,13 +2,15 @@
 
 Drop-in faster implementation of `../pca_qc/`.
 
-It writes the same output paths relative to this directory:
+It writes the same published PCA/QC outputs relative to this directory, but the
+large internal matrix is stored as compact on-disk memmaps instead of pandas TSV
+matrices by default:
 
 ```text
-data/merged/genotype_matrix_raw.tsv
-data/merged/genotype_matrix_numeric.tsv
 data/merged/snp_info.tsv
-data/plink/genotypes.ped
+data/plink/genotypes.bed
+data/plink/genotypes.bim
+data/plink/genotypes.fam
 data/plink/genotypes.map
 data/pca/pca.eigenvec
 data/pca/pca.eigenval
@@ -16,6 +18,16 @@ plots/pca_pc1_pc2.png
 plots/pca_pc3_pc4.png
 logs/fast_pipeline.log
 ```
+
+`genotypes.ped` is intentionally a placeholder in the fast path because PED is
+multi-GB text at cohort scale. Set `BV_WRITE_MATRICES=1` to emit the legacy
+numeric genotype TSV for debugging; the raw string matrix remains skipped in
+the compact backend.
+
+By default `BV_PCA_BACKEND=auto`: use `plink2` for QC/pruning/PCA when it is on
+`PATH`, otherwise fall back to the chunked Python backend. Set
+`BV_PCA_BACKEND=python` to force the Python path or `BV_PCA_BACKEND=plink` to
+require PLINK.
 
 Run:
 
@@ -25,11 +37,11 @@ bash run_pipeline.sh
 ```
 
 The implementation keeps the existing dependency set but avoids the slowest
-Python row loops in the original pipeline:
+and largest dense-matrix operations in the original pipeline:
 
-- sample files are read in parallel;
-- allele counting and dosage encoding are vectorized with NumPy;
-- HWE filtering is vectorized;
-- LD pruning keeps the original greedy window behavior but vectorizes each
-  window comparison;
-- PED/MAP text output is emitted with vectorized string preparation.
+- every readable sample contributes to the full SNP universe before QC;
+- alleles and dosages are stored as `uint8`/`int8` memmaps;
+- PLINK BED/BIM/FAM is written directly;
+- call-rate, MAF, HWE, LD pruning, and PCA run in chunks;
+- PCA uses a chunked sample covariance matrix instead of a dense samples x SNPs
+  float matrix.

@@ -87,10 +87,13 @@ def load_all_samples_parallel(data_dir: Path, workers: int) -> dict:
             continue
         tasks.append((d.name, txts[0]))
     out: dict = {}
+    t0 = time.time()
+    completed = 0
     if workers > 1 and len(tasks) > 1:
         ctx = mp.get_context("fork")
         with ctx.Pool(min(workers, len(tasks))) as pool:
             for sid, df, err in pool.imap_unordered(_read_one, tasks, chunksize=1):
+                completed += 1
                 if err:
                     path = dict(tasks).get(sid, "")
                     log.error(f"  Skipping {sid}: {err}")
@@ -102,9 +105,23 @@ def load_all_samples_parallel(data_dir: Path, workers: int) -> dict:
                     })
                 else:
                     out[sid] = df
+                if completed % 50 == 0 or completed == len(tasks):
+                    elapsed = max(time.time() - t0, 1e-6)
+                    rate = completed / elapsed
+                    eta = (len(tasks) - completed) / max(rate, 1e-6)
+                    log.info(
+                        "Loaded %d/%d samples (ok=%d skipped=%d, %.1f files/s, ETA %.0fs)",
+                        completed,
+                        len(tasks),
+                        len(out),
+                        len(errors),
+                        rate,
+                        eta,
+                    )
     else:
         for t in tasks:
             sid, df, err = _read_one(t)
+            completed += 1
             if err:
                 log.error(f"  Skipping {sid}: {err}")
                 errors.append({
@@ -115,6 +132,19 @@ def load_all_samples_parallel(data_dir: Path, workers: int) -> dict:
                 })
             else:
                 out[sid] = df
+            if completed % 50 == 0 or completed == len(tasks):
+                elapsed = max(time.time() - t0, 1e-6)
+                rate = completed / elapsed
+                eta = (len(tasks) - completed) / max(rate, 1e-6)
+                log.info(
+                    "Loaded %d/%d samples (ok=%d skipped=%d, %.1f files/s, ETA %.0fs)",
+                    completed,
+                    len(tasks),
+                    len(out),
+                    len(errors),
+                    rate,
+                    eta,
+                )
     sba.write_errors(errors)
     return out
 

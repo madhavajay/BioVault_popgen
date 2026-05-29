@@ -12,9 +12,10 @@ This script:
   1. Discovers sample dirs and reads DDNA TXTs in parallel via
      multiprocessing.Pool. pd.read_csv is used for the parse only — all
      filtering is numpy bytes ops, ~10x faster than pandas .str methods.
-  2. Builds the SNP reference from the first sample's autosomal,
-     ACGT-only, gs>=min_gs SNPs (deduped by (chrom, pos)).
-  3. Looks up each subsequent sample's genotypes against that reference.
+  2. Builds the SNP reference from the supplied gnomAD loading coordinates
+     when --loadings-npz is provided. Otherwise falls back to the cohort-wide
+     union of autosomal, ACGT-only, gs>=min_gs SNPs.
+  3. Looks up each sample's genotypes against that reference.
   4. Per variant, sets A1 = minor allele in the cohort, A2 = major.
      Mono-allelic variants kept as A1='.', A2=observed (matches plink2
      output from tped with `len(observed) <= 2` pre-filter).
@@ -26,7 +27,7 @@ This script:
 
 Usage:
     fast_convert_ddna_to_plink.py <data_dir> <out_prefix> [--min-gs F]
-                                  [--workers N]
+                                  [--workers N] [--loadings-npz PATH]
 """
 
 from __future__ import annotations
@@ -110,25 +111,63 @@ def read_ddna_fast(path: str, min_gs: float):
 
 
 # Globals populated in worker init / main process; readable across forks.
-_REF_RSID_TO_IDX: dict | None = None
+_REF_KEY_TO_IDX: dict | None = None
 _MIN_GS: float = 0.15
 
 
-def _worker_init(rsid_to_idx, min_gs):
-    global _REF_RSID_TO_IDX, _MIN_GS
-    _REF_RSID_TO_IDX = rsid_to_idx
+def _variant_keys(chrom: np.ndarray, pos: np.ndarray) -> np.ndarray:
+    chrom_int = np.array([int(c) for c in chrom.astype(str)], dtype=np.int32)
+    return chrom_int.astype(np.int64) * (10**11) + pos.astype(np.int64)
+
+
+def _load_projection_reference(path: str | None):
+    if not path:
+        return None
+    data = np.load(path, allow_pickle=False)
+    chrom = data["chrom"].astype("S2")
+    pos = data["pos"].astype(np.int64)
+    ref = data["ref"].astype("S1")
+    alt = data["alt"].astype("S1")
+    keys = _variant_keys(chrom, pos).astype(np.int64)
+    order = np.argsort(keys, kind="stable")
+    keys = keys[order]
+    chrom = chrom[order]
+    pos = pos[order]
+    ref = ref[order]
+    alt = alt[order]
+    _, first_idx = np.unique(keys, return_index=True)
+    first_idx.sort()
+    keys = keys[first_idx]
+    chrom = chrom[first_idx]
+    pos = pos[first_idx]
+    ref = ref[first_idx]
+    alt = alt[first_idx]
+    rsid = np.array(
+        [
+            f"{c.decode() if isinstance(c, bytes) else c}:{int(p)}:{r.decode() if isinstance(r, bytes) else r}:{a.decode() if isinstance(a, bytes) else a}"
+            for c, p, r, a in zip(chrom, pos, ref, alt)
+        ],
+        dtype=object,
+    )
+    return keys, rsid, chrom, pos, ref, alt
+
+
+def _worker_init(key_to_idx, min_gs):
+    global _REF_KEY_TO_IDX, _MIN_GS
+    _REF_KEY_TO_IDX = key_to_idx
     _MIN_GS = min_gs
 
 
 def _worker_process(args):
     i, path = args
     try:
-        rsid, _chrom, _pos, gt = read_ddna_fast(path, _MIN_GS)
+        _rsid, chrom, pos, gt = read_ddna_fast(path, _MIN_GS)
     except Exception as exc:
         return i, None, None, None, f"failed to parse genotype file {path}: {exc}"
-    # Map rsid -> reference index; dropna -> kept rows.
+    # Map chrom/position -> reference index; dropna -> kept rows.
     # Use Series.map for vectorized dict lookup.
-    idx_series = pd.Series(rsid).map(_REF_RSID_TO_IDX)
+    keys = _variant_keys(chrom, pos)
+    idx_series = pd.Series(keys).map(_REF_KEY_TO_IDX)
     valid = idx_series.notna().to_numpy()
     if not valid.any():
         return i, np.empty(0, dtype=np.int64), np.empty(0, dtype=np.uint8), np.empty(0, dtype=np.uint8), None
@@ -142,13 +181,12 @@ def _worker_process(args):
         m2 = gt_view[:, 1] == base
         a1_codes[m1] = code
         a2_codes[m2] = code
-    # If same rsid appears multiple times in a sample, keep first (matches
+    # If the same marker appears multiple times in a sample, keep first (matches
     # the slow pipeline, which uses a dict-based one-shot fill in row order).
-    # pd.Series.map preserves order so this is naturally first-seen; but if
-    # there were duplicate rsids in the sample DDNA, our final write of A1[i,
+    # pd.Series.map preserves order so this is naturally first-seen, but if
+    # there were duplicate markers in the sample, our final write of A1[i,
     # ix] = a1v would let last-occurrence win. Use np.unique on ix to dedup.
     if np.unique(ix).size != ix.size:
-        # Keep first occurrence.
         _, first_idx = np.unique(ix, return_index=True)
         first_idx.sort()
         ix = ix[first_idx]
@@ -179,6 +217,8 @@ def main():
     ap.add_argument("--min-gs", type=float, default=0.15)
     ap.add_argument("--workers", type=int,
                     default=max(1, (os.cpu_count() or 4)))
+    ap.add_argument("--loadings-npz",
+                    help="Optional gnomAD loadings.npz; when provided, the cohort marker map is restricted to projection coordinates.")
     args = ap.parse_args()
     out_dir = os.path.dirname(os.path.abspath(args.out_prefix)) or "."
     os.makedirs(out_dir, exist_ok=True)
@@ -216,60 +256,82 @@ def main():
         _write_errors(errors_tsv, errors)
         sys.exit("ERROR: no sample dirs with .txt genotype files")
 
-    # --- Build SNP reference from first sample ----------------------------
+    projection_reference = _load_projection_reference(args.loadings_npz)
+    fixed_a1_code = None
+    fixed_a2_code = None
     t0 = time.time()
-    first_path = None
-    for sample_id, candidate in sample_paths:
-        try:
-            rsid0, chrom0, pos0, gt0 = read_ddna_fast(candidate, args.min_gs)
-        except Exception as exc:
-            errors.append({
-                "participant_id": sample_id,
-                "file": candidate,
-                "code": "PARSE_FAILED",
-                "message": f"failed while selecting reference SNP set: {exc}",
-            })
-            continue
-        if rsid0.size == 0:
-            errors.append({
-                "participant_id": sample_id,
-                "file": candidate,
-                "code": "NO_USABLE_VARIANTS",
-                "message": "file produced no usable autosomal SNPs for reference SNP set",
-            })
-            continue
-        first_path = candidate
-        break
-    if first_path is None:
-        _write_errors(errors_tsv, errors)
-        sys.exit("ERROR: no genotype file produced a usable reference SNP set")
-    print(f"Building SNP reference from: {os.path.basename(first_path)}")
+    if projection_reference is not None:
+        sorted_keys, rsid0, chrom0, pos0, ref0, alt0 = projection_reference
+        fixed_a1_code = np.array([BASE_CODE.get(bytes(a), 0) for a in alt0], dtype=np.uint8)
+        fixed_a2_code = np.array([BASE_CODE.get(bytes(r), 0) for r in ref0], dtype=np.uint8)
+        print(
+            f"Using gnomAD loading marker map directly: {len(sorted_keys):,} projection SNPs "
+            f"({time.time()-t0:.2f}s)"
+        )
+    else:
+        # --- Build SNP reference from cohort-wide marker union -------------
+        reference_by_key: dict[int, tuple[object, bytes, int]] = {}
+        completed_ref_scan = 0
+        for sample_id, candidate in sample_paths:
+            try:
+                candidate_rsid, candidate_chrom, candidate_pos, candidate_gt = read_ddna_fast(candidate, args.min_gs)
+            except Exception as exc:
+                errors.append({
+                    "participant_id": sample_id,
+                    "file": candidate,
+                    "code": "PARSE_FAILED",
+                    "message": f"failed while selecting reference SNP set: {exc}",
+                })
+                completed_ref_scan += 1
+                continue
+            if candidate_rsid.size == 0:
+                errors.append({
+                    "participant_id": sample_id,
+                    "file": candidate,
+                    "code": "NO_USABLE_VARIANTS",
+                    "message": "file produced no usable autosomal SNPs for reference SNP set",
+                })
+                completed_ref_scan += 1
+                continue
+            keys = _variant_keys(candidate_chrom, candidate_pos)
+            _, first_idx = np.unique(keys, return_index=True)
+            for idx in first_idx:
+                key = int(keys[idx])
+                if key not in reference_by_key:
+                    reference_by_key[key] = (
+                        candidate_rsid[idx],
+                        bytes(candidate_chrom[idx]),
+                        int(candidate_pos[idx]),
+                    )
+            completed_ref_scan += 1
+            if completed_ref_scan % 50 == 0 or completed_ref_scan == len(sample_paths):
+                elapsed = max(time.time() - t0, 1e-6)
+                rate = completed_ref_scan / elapsed
+                eta = (len(sample_paths) - completed_ref_scan) / max(rate, 1e-6)
+                print(
+                    f"Scanned {completed_ref_scan}/{len(sample_paths)} files for cohort marker map "
+                    f"({len(reference_by_key):,} unique markers, {rate:.1f} files/s, ETA {eta:.0f}s)",
+                    flush=True,
+                )
+        if not reference_by_key:
+            _write_errors(errors_tsv, errors)
+            sys.exit("ERROR: no genotype file produced a usable cohort marker map")
 
-    # Dedup by (chrom, pos), keep first.
-    n_before_dedup = rsid0.size
-    # Encode chrom/pos to a single uint64 sort/group key (chrom in 1..22 fits 5 bits).
-    chrom_int = np.array([int(c) for c in chrom0.astype(str)], dtype=np.int32)
-    sort_key = chrom_int.astype(np.int64) * (10**11) + pos0
-    order = np.argsort(sort_key, kind="stable")
-    rsid0 = rsid0[order]
-    chrom0 = chrom0[order]
-    pos0 = pos0[order]
-    gt0 = gt0[order]
-    chrom_int = chrom_int[order]
-    sort_key = sort_key[order]
-    # First occurrence of each (chrom, pos)
-    _, first_idx = np.unique(sort_key, return_index=True)
-    first_idx.sort()
-    rsid0 = rsid0[first_idx]
-    chrom0 = chrom0[first_idx]
-    pos0 = pos0[first_idx]
-    gt0 = gt0[first_idx]
+        sorted_keys = np.array(sorted(reference_by_key), dtype=np.int64)
+        ref_rows = [reference_by_key[int(key)] for key in sorted_keys]
+        rsid0 = np.array([row[0] for row in ref_rows], dtype=object)
+        chrom0 = np.array([row[1] for row in ref_rows], dtype="S2")
+        pos0 = np.array([row[2] for row in ref_rows], dtype=np.int64)
+        print(
+            f"Built cohort marker map: {len(reference_by_key):,} autosomal SNPs "
+            f"({time.time()-t0:.2f}s)"
+        )
 
     ref_chrom = chrom0
     ref_rsid = rsid0
     ref_pos = pos0
     n_snps = ref_rsid.size
-    rsid_to_idx = {str(r): i for i, r in enumerate(ref_rsid.tolist())}
+    key_to_idx = {int(key): i for i, key in enumerate(sorted_keys.tolist())}
     print(f"Reference SNP set: {n_snps:,} autosomal SNPs ({time.time()-t0:.2f}s)")
 
     # --- Read all samples in parallel -------------------------------------
@@ -287,12 +349,14 @@ def main():
 
     t0 = time.time()
     work = list(enumerate([path for _sid, path in sample_paths]))
+    completed = 0
     if args.workers > 1 and n_samples > 1:
         ctx = mp.get_context("fork")
         with ctx.Pool(min(args.workers, n_samples),
                       initializer=_worker_init,
-                      initargs=(rsid_to_idx, args.min_gs)) as pool:
+                      initargs=(key_to_idx, args.min_gs)) as pool:
             for i, ix, a1c, a2c, err in pool.imap_unordered(_worker_process, work, chunksize=1):
+                completed += 1
                 if err:
                     errors.append({
                         "participant_id": sample_ids[i],
@@ -300,13 +364,23 @@ def main():
                         "code": "PARSE_FAILED",
                         "message": err,
                     })
-                    continue
-                A1i[i, ix] = a1c
-                A2i[i, ix] = a2c
+                else:
+                    A1i[i, ix] = a1c
+                    A2i[i, ix] = a2c
+                if completed % 50 == 0 or completed == n_samples:
+                    elapsed = max(time.time() - t0, 1e-6)
+                    rate = completed / elapsed
+                    eta = (n_samples - completed) / max(rate, 1e-6)
+                    print(
+                        f"Parsed {completed}/{n_samples} samples "
+                        f"({rate:.1f} files/s, ETA {eta:.0f}s)",
+                        flush=True,
+                    )
     else:
-        _worker_init(rsid_to_idx, args.min_gs)
+        _worker_init(key_to_idx, args.min_gs)
         for w in work:
             i, ix, a1c, a2c, err = _worker_process(w)
+            completed += 1
             if err:
                 errors.append({
                     "participant_id": sample_ids[i],
@@ -314,9 +388,18 @@ def main():
                     "code": "PARSE_FAILED",
                     "message": err,
                 })
-                continue
-            A1i[i, ix] = a1c
-            A2i[i, ix] = a2c
+            else:
+                A1i[i, ix] = a1c
+                A2i[i, ix] = a2c
+            if completed % 50 == 0 or completed == n_samples:
+                elapsed = max(time.time() - t0, 1e-6)
+                rate = completed / elapsed
+                eta = (n_samples - completed) / max(rate, 1e-6)
+                print(
+                    f"Parsed {completed}/{n_samples} samples "
+                    f"({rate:.1f} files/s, ETA {eta:.0f}s)",
+                    flush=True,
+                )
     failed_indices = {
         idx for idx, (_sid, path) in enumerate(sample_paths)
         if any(row["file"] == path and row["code"] == "PARSE_FAILED" for row in errors)
@@ -332,58 +415,66 @@ def main():
         sys.exit("ERROR: no genotype files could be parsed; see errors.tsv")
     print(f"Read {n_samples} samples in {time.time()-t0:.2f}s")
 
-    # --- Per-variant allele counts, biallelic filter -----------------------
+    # --- Per-variant allele assignment ------------------------------------
     t0 = time.time()
-    n_var = n_snps
-    counts = np.zeros((n_var, 4), dtype=np.int32)
-    both_present = (A1i != 0) & (A2i != 0)
-    for code in range(1, 5):
-        counts[:, code - 1] = (((A1i == code) & both_present).sum(axis=0)
-                               + ((A2i == code) & both_present).sum(axis=0))
-    present_mask = counts > 0
-    n_distinct = present_mask.sum(axis=1)
-    keep_variant = (n_distinct >= 1) & (n_distinct <= 2)
-    print(f"Allele counts in {time.time()-t0:.2f}s; "
-          f"mono+biallelic kept: {int(keep_variant.sum()):,}/{n_var:,} "
-          f"(mono: {int((n_distinct==1).sum()):,}, bi: {int((n_distinct==2).sum()):,})")
+    if fixed_a1_code is not None and fixed_a2_code is not None:
+        keep_idx = np.where((fixed_a1_code > 0) & (fixed_a2_code > 0))[0]
+        a1_code = fixed_a1_code[keep_idx]
+        a2_code = fixed_a2_code[keep_idx]
+        print(
+            f"Using fixed gnomAD ref/alt allele orientation for {len(keep_idx):,}/{n_snps:,} SNPs "
+            f"({time.time()-t0:.2f}s)"
+        )
+    else:
+        n_var = n_snps
+        counts = np.zeros((n_var, 4), dtype=np.int32)
+        both_present = (A1i != 0) & (A2i != 0)
+        for code in range(1, 5):
+            counts[:, code - 1] = (((A1i == code) & both_present).sum(axis=0)
+                                   + ((A2i == code) & both_present).sum(axis=0))
+        present_mask = counts > 0
+        n_distinct = present_mask.sum(axis=1)
+        keep_variant = (n_distinct >= 1) & (n_distinct <= 2)
+        print(f"Allele counts in {time.time()-t0:.2f}s; "
+              f"mono+biallelic kept: {int(keep_variant.sum()):,}/{n_var:,} "
+              f"(mono: {int((n_distinct==1).sum()):,}, bi: {int((n_distinct==2).sum()):,})")
 
-    # --- A1/A2 assignment --------------------------------------------------
-    t0 = time.time()
-    keep_idx = np.where(keep_variant)[0]
-    k = len(keep_idx)
-    cnt_k = counts[keep_idx]
-    pres_k = present_mask[keep_idx]
-    nd_k = n_distinct[keep_idx]
-    order = np.argsort(~pres_k, axis=1, kind="stable")
-    allele_lo_code = (order[:, 0] + 1).astype(np.uint8)
-    allele_hi_code = (order[:, 1] + 1).astype(np.uint8)
-    mono = nd_k == 1
-    if mono.any():
-        allele_hi_code = np.where(mono, 0, allele_hi_code).astype(np.uint8)
-    cnt_lo = cnt_k[np.arange(k), allele_lo_code - 1]
-    safe_hi_idx = np.where(allele_hi_code > 0, allele_hi_code - 1, 0)
-    cnt_hi = np.where(allele_hi_code > 0, cnt_k[np.arange(k), safe_hi_idx], 0)
-    tied = (cnt_lo == cnt_hi) & (~mono)
+        t0 = time.time()
+        keep_idx = np.where(keep_variant)[0]
+        k = len(keep_idx)
+        cnt_k = counts[keep_idx]
+        pres_k = present_mask[keep_idx]
+        nd_k = n_distinct[keep_idx]
+        order = np.argsort(~pres_k, axis=1, kind="stable")
+        allele_lo_code = (order[:, 0] + 1).astype(np.uint8)
+        allele_hi_code = (order[:, 1] + 1).astype(np.uint8)
+        mono = nd_k == 1
+        if mono.any():
+            allele_hi_code = np.where(mono, 0, allele_hi_code).astype(np.uint8)
+        cnt_lo = cnt_k[np.arange(k), allele_lo_code - 1]
+        safe_hi_idx = np.where(allele_hi_code > 0, allele_hi_code - 1, 0)
+        cnt_hi = np.where(allele_hi_code > 0, cnt_k[np.arange(k), safe_hi_idx], 0)
+        tied = (cnt_lo == cnt_hi) & (~mono)
 
-    a1_code = np.where(cnt_lo < cnt_hi, allele_lo_code, allele_hi_code).astype(np.uint8)
-    a2_code = np.where(cnt_lo < cnt_hi, allele_hi_code, allele_lo_code).astype(np.uint8)
+        a1_code = np.where(cnt_lo < cnt_hi, allele_lo_code, allele_hi_code).astype(np.uint8)
+        a2_code = np.where(cnt_lo < cnt_hi, allele_hi_code, allele_lo_code).astype(np.uint8)
 
-    if mono.any():
-        a1_code = np.where(mono, 0, a1_code).astype(np.uint8)
-        a2_code = np.where(mono, allele_lo_code, a2_code).astype(np.uint8)
+        if mono.any():
+            a1_code = np.where(mono, 0, a1_code).astype(np.uint8)
+            a2_code = np.where(mono, allele_lo_code, a2_code).astype(np.uint8)
 
-    if tied.any():
-        A1i_k = A1i[:, keep_idx]
-        nonmiss = A1i_k != 0
-        first_sample = nonmiss.argmax(axis=0)
-        anchor = A1i_k[first_sample, np.arange(k)]
-        anchor_is_lo = anchor == allele_lo_code
-        tied_a2 = np.where(anchor_is_lo, allele_lo_code, allele_hi_code)
-        tied_a1 = np.where(anchor_is_lo, allele_hi_code, allele_lo_code)
-        a1_code = np.where(tied, tied_a1, a1_code).astype(np.uint8)
-        a2_code = np.where(tied, tied_a2, a2_code).astype(np.uint8)
-    print(f"Per-variant A1/A2 in {time.time()-t0:.2f}s "
-          f"(tied: {int(tied.sum()):,}, mono: {int(mono.sum()):,})")
+        if tied.any():
+            A1i_k = A1i[:, keep_idx]
+            nonmiss = A1i_k != 0
+            first_sample = nonmiss.argmax(axis=0)
+            anchor = A1i_k[first_sample, np.arange(k)]
+            anchor_is_lo = anchor == allele_lo_code
+            tied_a2 = np.where(anchor_is_lo, allele_lo_code, allele_hi_code)
+            tied_a1 = np.where(anchor_is_lo, allele_hi_code, allele_lo_code)
+            a1_code = np.where(tied, tied_a1, a1_code).astype(np.uint8)
+            a2_code = np.where(tied, tied_a2, a2_code).astype(np.uint8)
+        print(f"Per-variant A1/A2 in {time.time()-t0:.2f}s "
+              f"(tied: {int(tied.sum()):,}, mono: {int(mono.sum()):,})")
 
     # --- Genotype codes (PLINK bed encoding) -------------------------------
     t0 = time.time()

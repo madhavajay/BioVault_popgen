@@ -151,12 +151,25 @@ def main():
     t0 = time.time()
     results = {}
     obs_counts = {}
+    completed = 0
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = [pool.submit(process_sample, it) for it in work_items]
         for f in as_completed(futures):
             pid, dosage, n_obs = f.result()
             results[pid] = dosage
             obs_counts[pid] = n_obs
+            completed += 1
+            if completed % 50 == 0 or completed == len(work_items):
+                elapsed = max(time.time() - t0, 1e-6)
+                rate = completed / elapsed
+                eta = (len(work_items) - completed) / max(rate, 1e-6)
+                log.info(
+                    "Projected %d/%d samples (%.1f files/s, ETA %.0fs)",
+                    completed,
+                    len(work_items),
+                    rate,
+                    eta,
+                )
     ingest_s = time.time() - t0
     log.info(f"Ingested {len(results)} samples in {ingest_s:.1f}s")
 

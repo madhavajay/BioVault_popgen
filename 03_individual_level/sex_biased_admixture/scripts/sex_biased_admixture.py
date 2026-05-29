@@ -338,26 +338,42 @@ def nmf_components(samples: dict, chroms: list,
     panel = panel.sort_values(["chrom_sort", "pos", "rsid"], kind="stable")
     all_variant_ids = panel["rsid"].tolist()
 
-    signal = pd.DataFrame(
-        {sid: per_sample[sid].reindex(all_variant_ids) for sid in sample_ids},
-        index=all_variant_ids,
-    )
-    called = signal.notna()
-    call_count = called.sum(axis=1)
+    call_counter = pd.Series(0, index=pd.Index(all_variant_ids, name="rsid"), dtype=np.int32)
+    for sid in sample_ids:
+        sample_ids_called = per_sample[sid].dropna().index
+        sample_ids_called = sample_ids_called[sample_ids_called.isin(call_counter.index)]
+        if len(sample_ids_called):
+            call_counter.loc[sample_ids_called] += 1
+    call_count = call_counter
     call_rate = call_count / len(sample_ids)
-    variance = signal.var(axis=1, skipna=True)
-    keep = (call_rate >= NMF_MIN_CALL_RATE) & (variance.fillna(0.0) > 0.0)
+    prekeep = call_rate >= NMF_MIN_CALL_RATE
+
+    candidate_ids = call_rate.index[prekeep].tolist()
+    if candidate_ids:
+        signal = pd.DataFrame(
+            {sid: per_sample[sid].reindex(candidate_ids) for sid in sample_ids},
+            index=candidate_ids,
+        )
+        variance_candidates = signal.var(axis=1, skipna=True).fillna(0.0)
+    else:
+        signal = pd.DataFrame(index=[], columns=sample_ids)
+        variance_candidates = pd.Series(dtype=float)
+
+    variance = pd.Series(0.0, index=call_rate.index)
+    if not variance_candidates.empty:
+        variance.loc[variance_candidates.index] = variance_candidates
+    keep = prekeep & (variance > 0.0)
 
     filter_df = panel.set_index("rsid").reindex(all_variant_ids)[["chrom", "pos"]].copy()
     filter_df.insert(0, "rsid", all_variant_ids)
     filter_df["called_samples"] = call_count.to_numpy(dtype=int)
     filter_df["missing_samples"] = (len(sample_ids) - call_count).to_numpy(dtype=int)
     filter_df["call_rate"] = call_rate.to_numpy(dtype=float)
-    filter_df["variance"] = variance.fillna(0.0).to_numpy(dtype=float)
+    filter_df["variance"] = variance.to_numpy(dtype=float)
     filter_df["filter"] = np.where(
         call_rate < NMF_MIN_CALL_RATE,
         "low_call_rate",
-        np.where(variance.fillna(0.0) <= 0.0, "zero_variance", "pass"),
+        np.where(variance <= 0.0, "zero_variance", "pass"),
     )
     filter_path = RESULTS_DIR / f"nmf_variant_filter_{region}.tsv"
     filter_df[filter_df["filter"] != "pass"].to_csv(filter_path, sep="\t", index=False)
@@ -366,11 +382,17 @@ def nmf_components(samples: dict, chroms: list,
         f"(min_call_rate={NMF_MIN_CALL_RATE:.2f}); dropped variants -> {filter_path}"
     )
 
-    variant_ids = signal.index[keep].tolist()[::subsample_step]
+    variant_ids = call_rate.index[keep].tolist()[::subsample_step]
     log.info(
         f"    NMF: {len(variant_ids):,} cohort rsID-aligned SNPs from chroms "
         f"{chroms[:3]}{'…' if len(chroms)>3 else ''}"
     )
+
+    if not variant_ids:
+        log.warning(
+            f"    NMF skipped for {region}: no variants survived call-rate and variance filters"
+        )
+        return pd.DataFrame(np.nan, index=sample_ids, columns=["c1", "c2", "c3"])
 
     mat = signal.loc[variant_ids, sample_ids].fillna(0.5).T.to_numpy(dtype=np.float32)
 
@@ -466,6 +488,10 @@ def plot_figure(df: pd.DataFrame):
     ax_a = fig.add_subplot(gs[0, 0])
 
     all_c1 = pd.concat([df["auto_c1"], df["x_c1"]]).dropna()
+    if all_c1.empty:
+        log.warning("Skipping sex-biased admixture figure: no finite NMF components were produced")
+        plt.close(fig)
+        return
     margin = 0.05
     lo     = max(0.0, all_c1.min() - margin)
     hi     = min(1.0, all_c1.max() + margin)

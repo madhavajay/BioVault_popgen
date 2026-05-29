@@ -7,7 +7,7 @@
 //       per-participant `bvs emit-long`, then per-country `bvs aggregate-long`
 //       -> allele_freq_<country_norm>.tsv
 //
-//   population_fst_aims  (ghcr.io/madhavajay/biovault-popgen:0.1.4-fast)
+//   population_fst_aims  (ghcr.io/madhavajay/biovault-popgen:0.1.6-fast)
 //       FST (load/merge -> WC84 -> visualise) then AIMs (merge w/ bundled
 //       gnomAD ref -> differential SNPs -> AIMs panels)
 //
@@ -91,7 +91,7 @@ process split_allele_freq {
     // `docker run --entrypoint "" … bvs …` in 04_run_allele_freq.sh).
     containerOptions '--entrypoint=""'
     stageInMode 'symlink'
-    errorStrategy { params.nextflow.error_strategy }
+    errorStrategy 'terminate'
     maxRetries { params.nextflow.max_retries }
 
     input:
@@ -125,35 +125,47 @@ process split_allele_freq {
     mkdir -p bvlr
     : > successful_mapping.tsv
     : > skipped_participants.tsv
+    total_participants=\$(wc -l < mapping.tsv | tr -d ' ')
+    processed_participants=0
+    participant_start=\$(date +%s)
     while IFS="\$(printf '\\t')" read -r pid country fname; do
         [ -n "\${pid}" ] || continue
+        processed_participants=\$((processed_participants + 1))
         src="geno/\${fname}"
         if [ ! -s "\${src}" ]; then
             echo "WARNING: skipping participant \${pid}: missing or empty genotype \${src}" >&2
             printf '%s\\t%s\\t%s\\tmissing_or_empty_genotype\\n' "\${pid}" "\${country}" "\${fname}" >> skipped_participants.tsv
-            continue
-        fi
-        if ! bvs emit-long --input "\${src}" --output "bvlr/\${pid}.bvlr" \\
+        elif ! bvs emit-long --input "\${src}" --output "bvlr/\${pid}.bvlr" \\
             --participant "\${pid}" >/dev/null; then
             echo "WARNING: skipping participant \${pid}: bvs emit-long failed for \${src}" >&2
             printf '%s\\t%s\\t%s\\temit_long_failed\\n' "\${pid}" "\${country}" "\${fname}" >> skipped_participants.tsv
             rm -f "bvlr/\${pid}.bvlr"
-            continue
-        fi
-        if [ ! -s "bvlr/\${pid}.bvlr" ]; then
+        elif [ ! -s "bvlr/\${pid}.bvlr" ]; then
             echo "WARNING: skipping participant \${pid}: bvs emit-long produced an empty .bvlr" >&2
             printf '%s\\t%s\\t%s\\tempty_bvlr\\n' "\${pid}" "\${country}" "\${fname}" >> skipped_participants.tsv
             rm -f "bvlr/\${pid}.bvlr"
-            continue
+        else
+            printf '%s\\t%s\\t%s\\n' "\${pid}" "\${country}" "\${fname}" >> successful_mapping.tsv
         fi
-        printf '%s\\t%s\\t%s\\n' "\${pid}" "\${country}" "\${fname}" >> successful_mapping.tsv
+        if [ "\$((processed_participants % 50))" -eq 0 ] || [ "\${processed_participants}" -eq "\${total_participants}" ]; then
+            now=\$(date +%s)
+            elapsed=\$((now - participant_start))
+            [ "\${elapsed}" -gt 0 ] || elapsed=1
+            rate=\$(awk -v done="\${processed_participants}" -v sec="\${elapsed}" 'BEGIN { printf "%.1f", done / sec }')
+            remaining=\$((total_participants - processed_participants))
+            eta=\$(awk -v rem="\${remaining}" -v done="\${processed_participants}" -v sec="\${elapsed}" 'BEGIN { if (done > 0) printf "%.0f", rem * sec / done; else print "0" }')
+            echo "Processed \${processed_participants}/\${total_participants} participants (rate \${rate}/s, ETA \${eta}s)"
+        fi
     done < mapping.tsv
 
     [ -s successful_mapping.tsv ] || { echo "ERROR: no participants produced usable .bvlr files" >&2; exit 1; }
 
     FAIL=0
     : > successful_countries.txt
+    total_countries=\$(cut -f2 successful_mapping.tsv | sort -u | wc -l | tr -d ' ')
+    processed_countries=0
     for country in \$(cut -f2 successful_mapping.tsv | sort -u); do
+        processed_countries=\$((processed_countries + 1))
         cdir="agg_\${country}"; mkdir -p "\${cdir}"; n=0
         while IFS="\$(printf '\\t')" read -r pid c _; do
             [ "\${c}" = "\${country}" ] || continue
@@ -161,7 +173,7 @@ process split_allele_freq {
         done < successful_mapping.tsv
         [ "\${n}" -gt 0 ] || { echo "WARNING: country '\${country}' produced 0 .bvlr; skipping" >&2; continue; }
         out="af_out/allele_freq_\${country}.tsv"
-        echo "  \${country} (\${n} participants) -> \${out}"
+        echo "Aggregating country \${processed_countries}/\${total_countries}: \${country} (\${n} participants) -> \${out}"
         if ! bvs aggregate-long --input "\${cdir}" \\
             --matrix-tsv "matrix_\${country}.tsv" \\
             --allele-freq-tsv "\${out}" >/dev/null; then
@@ -194,10 +206,10 @@ process split_allele_freq {
 }
 
 process population_fst_aims {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.4-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.6-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
-    errorStrategy { params.nextflow.error_strategy }
+    errorStrategy 'terminate'
     maxRetries { params.nextflow.max_retries }
 
     input:

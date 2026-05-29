@@ -107,7 +107,7 @@ workflow USER {
 }
 
 process qc_file_batch {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.4-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.6-fast'
     stageInMode 'symlink'
     errorStrategy { params.nextflow.error_strategy }
     maxRetries { params.nextflow.max_retries }
@@ -197,7 +197,7 @@ process qc_file_batch {
 }
 
 process qc_input_issue {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.4-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.6-fast'
     errorStrategy { params.nextflow.error_strategy }
     maxRetries { params.nextflow.max_retries }
 
@@ -242,7 +242,7 @@ process qc_input_issue {
 }
 
 process merge_qc_reports {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.4-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.6-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     errorStrategy { params.nextflow.error_strategy }
     maxRetries { params.nextflow.max_retries }
