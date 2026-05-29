@@ -3,13 +3,16 @@
 // Structure (one Nextflow task PER COUNTRY so each is cached/resumable on its
 // own, and disk stays bounded to a single country's .bvlr at a time):
 //
-//   country_allele_freq  (BIOSYNTH_IMAGE, default ghcr.io/openmined/biosynth:0.1.27)
-//       For ONE country: per-participant `bvs emit-long` (parallel pool), then
-//       `bvs aggregate-long --input-list` -> allele_freq_<country>.tsv. Deletes
-//       its .bvlr when done, so peak disk = ~one country's worth. Runs one
-//       country at a time by default (maxForks via params.country_forks).
+//   country_allele_freq  (BIOSYNTH_IMAGE, default ghcr.io/openmined/biosynth:0.1.28)
+//       For ONE country: a single fused `bvs fast-allele-freq` parses every
+//       participant and aggregates -> allele_freq_<country>.tsv in one pass.
+//       No per-participant .bvlr is written (peak disk ~0), parsing runs in
+//       parallel across cores. Output is content-identical to the previous
+//       emit-long + aggregate-long path (loci/counts/rsid), only sorted by
+//       locus_key; downstream FST/AIMs join on locus_key so results are
+//       unchanged. Runs one country at a time by default (params.country_forks).
 //
-//   population_fst_aims  (ghcr.io/madhavajay/biovault-popgen:0.1.7-fast)
+//   population_fst_aims  (ghcr.io/madhavajay/biovault-popgen:0.1.8-fast)
 //       Gathers every country's outputs, then FST (load/merge -> WC84 ->
 //       visualise) and AIMs (merge w/ bundled gnomAD ref -> differential SNPs
 //       -> AIMs panels). FST/AIMs scripts are BAKED into biovault-popgen at
@@ -20,7 +23,7 @@
 
 nextflow.enable.dsl=2
 
-def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.27'
+def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.28'
 
 def normalizeCountry(String raw) {
     return (raw ?: '')
@@ -99,7 +102,9 @@ process country_allele_freq {
     containerOptions '--entrypoint=""'
     stageInMode 'symlink'
     tag { country }
-    maxForks countryForks()
+    // Nextflow 25.x strict syntax rejects a user-function call as a directive
+    // argument, so inline countryForks()'s logic (null/0 -> 1, else the value).
+    maxForks( (params.country_forks ?: 1) as int )
     errorStrategy { params.nextflow.error_strategy }
     maxRetries { params.nextflow.max_retries }
 
@@ -122,89 +127,55 @@ process country_allele_freq {
     """
     set -euo pipefail
     cc="cc_${country}"
-    mkdir -p geno bvlr res "\${cc}"
+    mkdir -p geno "\${cc}"
     ${staging.join('\n    ')}
     printf '%b\\n' "${mappingText}" > mapping.tsv   # pid<TAB>staged-filename
 
-    EMIT_WORKERS="${emitWorkers()}"
-    if ! [ "\${EMIT_WORKERS}" -gt 0 ] 2>/dev/null; then
-        EMIT_WORKERS="\$(nproc 2>/dev/null || echo 8)"
-    fi
+    THREADS="${emitWorkers()}"   # 0 = all cores (bvs auto-detects)
     n_in=\$(wc -l < mapping.tsv | tr -d ' ')
-    echo "[${country}] emit: \${n_in} participants, \${EMIT_WORKERS} parallel workers"
+    echo "[${country}] fast-allele-freq: \${n_in} participants, threads=\${THREADS}"
 
-    # One participant -> one .bvlr. Each worker writes its own result/warn files
-    # (no shared-append races); bvs row-warnings go to per-pid logs, not stderr.
-    emit_one() {
-        pid="\$1"; fname="\$2"
-        src="geno/\${fname}"
-        if [ ! -s "\${src}" ]; then
-            printf '%s\\t%s\\t%s\\tmissing_or_empty_genotype\\n' "\${pid}" "${country}" "\${fname}" > "res/\${pid}.skip"
-            return 0
-        fi
-        if ! bvs emit-long --input "\${src}" --output "bvlr/\${pid}.bvlr" \\
-            --participant "\${pid}" >/dev/null 2>"res/\${pid}.warn"; then
-            printf '%s\\t%s\\t%s\\temit_long_failed\\n' "\${pid}" "${country}" "\${fname}" > "res/\${pid}.skip"
-            rm -f "bvlr/\${pid}.bvlr"
-            return 0
-        fi
-        if [ ! -s "bvlr/\${pid}.bvlr" ]; then
-            printf '%s\\t%s\\t%s\\tempty_bvlr\\n' "\${pid}" "${country}" "\${fname}" > "res/\${pid}.skip"
-            rm -f "bvlr/\${pid}.bvlr"
-            return 0
-        fi
-        printf '%s\\t%s\\n' "\${pid}" "${country}" > "res/\${pid}.ok"
-    }
-
-    running=0
+    # Pre-scan only to record diagnostics: missing/empty genotype files -> skipped,
+    # the rest -> country participant map. bvs also tolerates bad files at runtime
+    # (a single unreadable file is skipped, it never aborts the country).
+    : > "\${cc}/skipped.tsv"
+    : > "\${cc}/country_map.part.tsv"
     while IFS="\$(printf '\\t')" read -r pid fname; do
         [ -n "\${pid}" ] || continue
-        emit_one "\${pid}" "\${fname}" &
-        running=\$((running + 1))
-        if [ "\${running}" -ge "\${EMIT_WORKERS}" ]; then
-            if wait -n 2>/dev/null; then running=\$((running - 1)); else wait; running=0; fi
+        if [ ! -s "geno/\${fname}" ]; then
+            printf '%s\\t%s\\t%s\\tmissing_or_empty_genotype\\n' "\${pid}" "${country}" "\${fname}" >> "\${cc}/skipped.tsv"
+        else
+            printf '%s\\t%s\\n' "\${pid}" "${country}" >> "\${cc}/country_map.part.tsv"
         fi
     done < mapping.tsv
-    wait
 
-    # Collate per-worker outputs into the country dir.
-    cat res/*.ok   2>/dev/null > "\${cc}/country_map.part.tsv"  || true   # pid<TAB>country
-    cat res/*.skip 2>/dev/null > "\${cc}/skipped.tsv"           || true
+    n=\$(wc -l < "\${cc}/country_map.part.tsv" | tr -d ' ')
     : > "\${cc}/warnings.log"
-    for w in res/*.warn; do
-        [ -e "\${w}" ] || continue
-        if [ -s "\${w}" ]; then cat "\${w}" >> "\${cc}/warnings.log"; fi
-    done
-
-    # Aggregate this country's .bvlr IN PLACE via --input-list (no copy).
-    list="list.txt"; : > "\${list}"; n=0
-    while IFS="\$(printf '\\t')" read -r pid _; do
-        if [ -s "bvlr/\${pid}.bvlr" ]; then printf '%s\\n' "bvlr/\${pid}.bvlr" >> "\${list}"; n=\$((n + 1)); fi
-    done < "\${cc}/country_map.part.tsv"
-
     if [ "\${n}" -gt 0 ]; then
         out="\${cc}/allele_freq_${country}.tsv"
         echo "[${country}] aggregate: \${n} participants -> allele_freq_${country}.tsv"
-        if bvs aggregate-long --input-list "\${list}" \\
-            --allele-freq-tsv "\${out}" >/dev/null 2>agg.log; then
-            [ -s agg.log ] && cat agg.log >> "\${cc}/warnings.log" || true
+        # ONE fused pass: parse every participant + aggregate -> allele_freq.
+        # No per-participant .bvlr written (peak disk ~0); parallel across cores;
+        # per-row warnings are coalesced into warnings.log, not streamed per row.
+        if bvs fast-allele-freq -i geno --threads "\${THREADS}" \\
+            --max-ram-gb ${params.max_ram_gb ?: 18} \\
+            --allele-freq-tsv "\${out}" >/dev/null 2>"\${cc}/warnings.log"; then
             [ -s "\${out}" ] || { echo "[${country}] WARNING: empty AF" >&2; rm -f "\${out}"; }
         else
-            echo "[${country}] WARNING: bvs aggregate-long failed" >&2
-            [ -s agg.log ] && cat agg.log >> "\${cc}/warnings.log" || true
+            echo "[${country}] WARNING: bvs fast-allele-freq failed" >&2
             rm -f "\${out}"
         fi
     else
-        echo "[${country}] WARNING: 0 usable .bvlr" >&2
+        echo "[${country}] WARNING: 0 usable genotype files" >&2
     fi
 
-    # Free disk: the .bvlr are no longer needed once this country's AF is written.
-    rm -rf bvlr res geno
+    # No intermediate .bvlr to clean up; just drop the staged symlinks.
+    rm -rf geno
     """
 }
 
 process population_fst_aims {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.7-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.8-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy 'terminate'
