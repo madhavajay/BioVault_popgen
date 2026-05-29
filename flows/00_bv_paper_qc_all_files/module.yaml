@@ -2,7 +2,7 @@ apiVersion: syftbox.openmined.org/v1alpha1
 kind: Module
 metadata:
   name: 00_bv_paper_qc_all_files
-  version: 0.1.9
+  version: 0.2.0
   authors:
     - madhava@openmined.org
   description: |
@@ -14,7 +14,7 @@ spec:
     kind: nextflow
     entrypoint: main.nf
     template: dynamic-nextflow
-    image: ghcr.io/madhavajay/biovault-popgen:0.1.9-fast
+    image: ghcr.io/madhavajay/biovault-popgen:0.2.0-fast
   inputs:
     - name: participants
       type: List[GenotypeRecord]

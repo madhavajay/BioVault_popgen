@@ -12,7 +12,7 @@
 
 nextflow.enable.dsl=2
 
-def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.29'
+def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.30'
 
 workflow USER {
     take:
@@ -107,7 +107,7 @@ process cohort_bed {
 }
 
 process pca_qc_fast {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.9-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.2.0-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy 'terminate'

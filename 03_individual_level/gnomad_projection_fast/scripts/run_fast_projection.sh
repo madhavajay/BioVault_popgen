@@ -75,14 +75,26 @@ if [ ! -s "${LOADINGS_NPZ}" ]; then
 fi
 export LOADINGS_NPZ
 
-log "STEP 1: DDNA -> PLINK bed/bim/fam (vectorized, no tped intermediary)"
-python3 "${SCRIPT_DIR}/fast_convert_ddna_to_plink.py" \
-    "${DATA_DIR}" "${WORKING}/study_raw" --min-gs "${MIN_GS}" --workers "${THREADS}" \
-    --loadings-npz "${LOADINGS_NPZ}" \
-    --expected-loadings-overlap "${EXPECTED_LOADINGS_OVERLAP}" \
-    --min-loadings-ratio "${MIN_LOADINGS_RATIO}"
-[ -f "${WORKING}/errors.tsv" ] && cp "${WORKING}/errors.tsv" "${OUT_DIR}/errors.tsv"
-[ -f "${WORKING}/warnings.tsv" ] && cp "${WORKING}/warnings.tsv" "${OUT_DIR}/warnings.tsv"
+if [ -n "${BV_PREBUILT_RAW:-}" ]; then
+    # Fast path: study_raw bed/bim/fam already built by `bvs project-bed` (byte-for-byte
+    # identical to fast_convert --loadings-npz). Skip the Python parse; QC/projection
+    # below are unchanged so outputs match exactly.
+    log "STEP 1: using prebuilt study_raw from bvs project-bed: ${BV_PREBUILT_RAW}.{bed,bim,fam}"
+    cp "${BV_PREBUILT_RAW}.bed" "${WORKING}/study_raw.bed"
+    cp "${BV_PREBUILT_RAW}.bim" "${WORKING}/study_raw.bim"
+    cp "${BV_PREBUILT_RAW}.fam" "${WORKING}/study_raw.fam"
+    _raw_dir="$(dirname "${BV_PREBUILT_RAW}")"
+    [ -f "${_raw_dir}/errors.tsv" ] && cp "${_raw_dir}/errors.tsv" "${OUT_DIR}/errors.tsv"
+else
+    log "STEP 1: DDNA -> PLINK bed/bim/fam (vectorized, no tped intermediary)"
+    python3 "${SCRIPT_DIR}/fast_convert_ddna_to_plink.py" \
+        "${DATA_DIR}" "${WORKING}/study_raw" --min-gs "${MIN_GS}" --workers "${THREADS}" \
+        --loadings-npz "${LOADINGS_NPZ}" \
+        --expected-loadings-overlap "${EXPECTED_LOADINGS_OVERLAP}" \
+        --min-loadings-ratio "${MIN_LOADINGS_RATIO}"
+    [ -f "${WORKING}/errors.tsv" ] && cp "${WORKING}/errors.tsv" "${OUT_DIR}/errors.tsv"
+    [ -f "${WORKING}/warnings.tsv" ] && cp "${WORKING}/warnings.tsv" "${OUT_DIR}/warnings.tsv"
+fi
 
 log "STEP 2: QC"
 plink2 --bfile "${WORKING}/study_raw" --rm-dup exclude-all \

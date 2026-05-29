@@ -2,7 +2,7 @@
 # Build the BioVault_popgen Docker image.
 #
 # Overrides:
-#   VERSION=0.1.9 ./build_docker.sh                   # tag ghcr.io/madhavajay/biovault-popgen:0.1.9 + :latest
+#   VERSION=0.2.0 ./build_docker.sh                   # tag ghcr.io/madhavajay/biovault-popgen:0.2.0 + :latest
 #   IMAGE_NAME=ghcr.io/foo/biovault-popgen ./build_docker.sh
 #   PLATFORM=linux/arm64 ./build_docker.sh
 #   BUILD_RUNTIME=0 PLATFORM=linux/arm64 ./build_docker.sh # build fast image only
@@ -12,7 +12,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERSION="${VERSION:-0.1.9}"
+VERSION="${VERSION:-0.2.0}"
 IMAGE_NAME="${IMAGE_NAME:-ghcr.io/madhavajay/biovault-popgen}"
 IMAGE_VERSIONED="${IMAGE_NAME}:${VERSION}"
 IMAGE_LATEST="${IMAGE_NAME}:latest"

@@ -2,7 +2,7 @@ apiVersion: syftbox.openmined.org/v1alpha1
 kind: Flow
 metadata:
   name: 01_bv_paper_pca_qc_fast
-  version: 0.1.9
+  version: 0.2.0
 spec:
   inputs:
     samplesheet:
