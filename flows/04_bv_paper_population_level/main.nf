@@ -33,6 +33,14 @@ def normalizeCountry(String raw) {
         .replaceAll(/^_+|_+$/, '')
 }
 
+def emitWorkers() {
+    // Concurrent `bvs emit-long` processes in split_allele_freq.
+    // 0/unset = use all cores at runtime (nproc); set params.emit_workers to cap.
+    def raw = params.emit_workers ?: 0
+    def n = raw as int
+    return n > 0 ? n : 0
+}
+
 workflow USER {
     take:
         context
@@ -122,41 +130,68 @@ process split_allele_freq {
     # Inlined split: just bvs (the biosynth image's only tool) — no baked
     # script needed in this container. Mirrors 04_population_level/fst_aims_fast
     # /scripts/split_allele_freq.sh (kept as the by-hand reference).
-    mkdir -p bvlr
+    mkdir -p bvlr res
     : > successful_mapping.tsv
     : > skipped_participants.tsv
+    : > emit_warnings.log
     total_participants=\$(wc -l < mapping.tsv | tr -d ' ')
-    processed_participants=0
-    participant_start=\$(date +%s)
-    while IFS="\$(printf '\\t')" read -r pid country fname; do
-        [ -n "\${pid}" ] || continue
-        processed_participants=\$((processed_participants + 1))
+
+    # Concurrency: default to all cores (one split task runs at a time, so it can
+    # use the whole machine); cap with params.emit_workers.
+    EMIT_WORKERS="${emitWorkers()}"
+    if ! [ "\${EMIT_WORKERS}" -gt 0 ] 2>/dev/null; then
+        EMIT_WORKERS="\$(nproc 2>/dev/null || echo 8)"
+    fi
+    echo "Emitting \${total_participants} participants with \${EMIT_WORKERS} parallel workers ..."
+
+    # One participant -> one .bvlr. Each worker writes its own result/warn files
+    # (res/<pid>.{ok,skip,warn}) so concurrent workers never race on shared
+    # appends, and bvs row-warnings go to per-participant logs instead of
+    # flooding the Nextflow log. mapping.tsv is tab-delimited, so genotype
+    # filenames containing spaces are read intact.
+    emit_one() {
+        pid="\$1"; country="\$2"; fname="\$3"
         src="geno/\${fname}"
         if [ ! -s "\${src}" ]; then
-            echo "WARNING: skipping participant \${pid}: missing or empty genotype \${src}" >&2
-            printf '%s\\t%s\\t%s\\tmissing_or_empty_genotype\\n' "\${pid}" "\${country}" "\${fname}" >> skipped_participants.tsv
-        elif ! bvs emit-long --input "\${src}" --output "bvlr/\${pid}.bvlr" \\
-            --participant "\${pid}" >/dev/null; then
-            echo "WARNING: skipping participant \${pid}: bvs emit-long failed for \${src}" >&2
-            printf '%s\\t%s\\t%s\\temit_long_failed\\n' "\${pid}" "\${country}" "\${fname}" >> skipped_participants.tsv
-            rm -f "bvlr/\${pid}.bvlr"
-        elif [ ! -s "bvlr/\${pid}.bvlr" ]; then
-            echo "WARNING: skipping participant \${pid}: bvs emit-long produced an empty .bvlr" >&2
-            printf '%s\\t%s\\t%s\\tempty_bvlr\\n' "\${pid}" "\${country}" "\${fname}" >> skipped_participants.tsv
-            rm -f "bvlr/\${pid}.bvlr"
-        else
-            printf '%s\\t%s\\t%s\\n' "\${pid}" "\${country}" "\${fname}" >> successful_mapping.tsv
+            printf '%s\\t%s\\t%s\\tmissing_or_empty_genotype\\n' "\${pid}" "\${country}" "\${fname}" > "res/\${pid}.skip"
+            return 0
         fi
-        if [ "\$((processed_participants % 50))" -eq 0 ] || [ "\${processed_participants}" -eq "\${total_participants}" ]; then
-            now=\$(date +%s)
-            elapsed=\$((now - participant_start))
-            [ "\${elapsed}" -gt 0 ] || elapsed=1
-            rate=\$(awk -v done="\${processed_participants}" -v sec="\${elapsed}" 'BEGIN { printf "%.1f", done / sec }')
-            remaining=\$((total_participants - processed_participants))
-            eta=\$(awk -v rem="\${remaining}" -v done="\${processed_participants}" -v sec="\${elapsed}" 'BEGIN { if (done > 0) printf "%.0f", rem * sec / done; else print "0" }')
-            echo "Processed \${processed_participants}/\${total_participants} participants (rate \${rate}/s, ETA \${eta}s)"
+        if ! bvs emit-long --input "\${src}" --output "bvlr/\${pid}.bvlr" \\
+            --participant "\${pid}" >/dev/null 2>"res/\${pid}.warn"; then
+            printf '%s\\t%s\\t%s\\temit_long_failed\\n' "\${pid}" "\${country}" "\${fname}" > "res/\${pid}.skip"
+            rm -f "bvlr/\${pid}.bvlr"
+            return 0
+        fi
+        if [ ! -s "bvlr/\${pid}.bvlr" ]; then
+            printf '%s\\t%s\\t%s\\tempty_bvlr\\n' "\${pid}" "\${country}" "\${fname}" > "res/\${pid}.skip"
+            rm -f "bvlr/\${pid}.bvlr"
+            return 0
+        fi
+        printf '%s\\t%s\\t%s\\n' "\${pid}" "\${country}" "\${fname}" > "res/\${pid}.ok"
+    }
+
+    running=0
+    while IFS="\$(printf '\\t')" read -r pid country fname; do
+        [ -n "\${pid}" ] || continue
+        emit_one "\${pid}" "\${country}" "\${fname}" &
+        running=\$((running + 1))
+        if [ "\${running}" -ge "\${EMIT_WORKERS}" ]; then
+            # Keep the pool full: launch a new worker as soon as ANY finishes,
+            # instead of draining the whole batch (which idles cores while it
+            # waits on the slowest file). Falls back to batch-wait on bash <4.3.
+            if wait -n 2>/dev/null; then running=\$((running - 1)); else wait; running=0; fi
         fi
     done < mapping.tsv
+    wait
+
+    # Collate per-worker results (order-independent).
+    cat res/*.ok   2>/dev/null >> successful_mapping.tsv  || true
+    cat res/*.skip 2>/dev/null >> skipped_participants.tsv || true
+    for w in res/*.warn; do
+        [ -e "\${w}" ] || continue
+        if [ -s "\${w}" ]; then cat "\${w}" >> emit_warnings.log; fi
+    done
+    echo "Emit done: \$(wc -l < successful_mapping.tsv | tr -d ' ') ok, \$(wc -l < skipped_participants.tsv | tr -d ' ') skipped"
 
     [ -s successful_mapping.tsv ] || { echo "ERROR: no participants produced usable .bvlr files" >&2; exit 1; }
 
@@ -176,11 +211,14 @@ process split_allele_freq {
         echo "Aggregating country \${processed_countries}/\${total_countries}: \${country} (\${n} participants) -> \${out}"
         if ! bvs aggregate-long --input "\${cdir}" \\
             --matrix-tsv "matrix_\${country}.tsv" \\
-            --allele-freq-tsv "\${out}" >/dev/null; then
+            --allele-freq-tsv "\${out}" >/dev/null 2>"aggregate_warnings_\${country}.log"; then
             echo "WARNING: bvs aggregate-long failed for country '\${country}'; skipping" >&2
+            [ ! -s "aggregate_warnings_\${country}.log" ] || cat "aggregate_warnings_\${country}.log" >> emit_warnings.log
             rm -f "\${out}"
             continue
         fi
+        [ ! -s "aggregate_warnings_\${country}.log" ] || cat "aggregate_warnings_\${country}.log" >> emit_warnings.log
+        rm -f "aggregate_warnings_\${country}.log"
         if [ ! -s "\${out}" ]; then
             echo "WARNING: empty AF for country '\${country}'; skipping" >&2
             rm -f "\${out}"
@@ -199,7 +237,27 @@ process split_allele_freq {
     else
         printf 'participant_id\\tfile\\tseverity\\tcode\\tmessage\\n' > af_out/errors.tsv
     fi
-    printf 'file\\tline_no\\tseverity\\tcode\\tmessage\\traw_line\\n' > af_out/warnings.tsv
+    if [ -s emit_warnings.log ]; then
+        awk 'BEGIN { OFS="\\t"; print "file", "line_no", "severity", "code", "message", "raw_line" }
+            /^WARNING: / {
+                raw=\$0
+                msg=\$0
+                sub(/^WARNING: /, "", msg)
+                n=split(msg, parts, ":")
+                file=parts[1]
+                line_no=parts[2]
+                detail=msg
+                if (n >= 3) {
+                    prefix=file ":" line_no ": "
+                    detail=substr(msg, length(prefix) + 1)
+                }
+                split(detail, tokens, " ")
+                code=tokens[1]
+                print file, line_no, "WARNING", code, detail, raw
+            }' emit_warnings.log > af_out/warnings.tsv
+    else
+        printf 'file\\tline_no\\tseverity\\tcode\\tmessage\\traw_line\\n' > af_out/warnings.tsv
+    fi
 
     POPULATIONS="\$(paste -sd, successful_countries.txt)"
     """

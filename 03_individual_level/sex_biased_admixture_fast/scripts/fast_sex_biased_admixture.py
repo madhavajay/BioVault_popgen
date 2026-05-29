@@ -66,6 +66,8 @@ if _dd:
 log = sba.log
 
 BATCH_SIZE = int(os.environ.get("BV_BATCH_SIZE", "100"))
+NMF_MIN_AUTO_SIGNALS = int(os.environ.get("BV_NMF_MIN_AUTO_SIGNALS", "10000"))
+NMF_MIN_X_SIGNALS = int(os.environ.get("BV_NMF_MIN_X_SIGNALS", "10000"))
 
 
 def _rsid_num(rsid) -> int:
@@ -395,11 +397,11 @@ def _handle_compact_result(
 def _variant_order(region: str, counts: dict, meta: dict, n_samples: int):
     rows = []
     for vid, (called, total, total_sq) in counts.items():
-        call_rate = called / n_samples if n_samples else 0.0
+        call_rate = min(1.0, called / n_samples) if n_samples else 0.0
         mean = total / called if called else 0.0
         variance = (total_sq / called - mean * mean) if called else 0.0
         chrom, pos = meta.get(vid, ("", np.nan))
-        rows.append((vid, chrom, pos, called, n_samples - called, call_rate, variance))
+        rows.append((vid, chrom, pos, called, max(0, n_samples - called), call_rate, variance))
     rows.sort(key=lambda r: (sba._chrom_sort_key(r[1]), r[2] if np.isfinite(r[2]) else 1e18, r[0]))
     df = pd.DataFrame(
         rows,
@@ -432,6 +434,46 @@ def _variant_order(region: str, counts: dict, meta: dict, n_samples: int):
     return df.loc[keep, "rsid_num"].astype(int).tolist()
 
 
+def _nmf_sample_filter(sample_cache: dict[str, Path]) -> list[str]:
+    rows = []
+    eligible = []
+    for sid in sorted(sample_cache):
+        with np.load(sample_cache[sid]) as data:
+            auto_n = int(len(data["auto_ids"]))
+            x_n = int(len(data["x_ids"]))
+        reason = "pass"
+        if auto_n < NMF_MIN_AUTO_SIGNALS:
+            reason = "low_autosome_signal"
+        elif x_n < NMF_MIN_X_SIGNALS:
+            reason = "low_x_signal"
+        else:
+            eligible.append(sid)
+        rows.append({
+            "sample_id": sid,
+            "auto_compact_snps": auto_n,
+            "x_compact_snps": x_n,
+            "filter": reason,
+        })
+
+    path = sba.RESULTS_DIR / "nmf_sample_filter.tsv"
+    pd.DataFrame(rows, columns=["sample_id", "auto_compact_snps", "x_compact_snps", "filter"]).to_csv(
+        path, sep="\t", index=False
+    )
+    dropped = len(rows) - len(eligible)
+    log.info(
+        "    NMF sample filter: keeping %d/%d samples "
+        "(min_auto_signals=%d, min_x_signals=%d); sample filter -> %s",
+        len(eligible),
+        len(rows),
+        NMF_MIN_AUTO_SIGNALS,
+        NMF_MIN_X_SIGNALS,
+        path,
+    )
+    if dropped:
+        log.warning("    NMF sample filter dropped %d low-signal samples before variant call-rate filtering", dropped)
+    return eligible
+
+
 def _nmf_from_cache(region: str, sample_ids: list[str], sample_cache: dict[str, Path], variant_ids: list[int]):
     log.info("    NMF: %d compact SNPs for %s", len(variant_ids), region)
     if not variant_ids:
@@ -462,13 +504,16 @@ def _nmf_from_cache(region: str, sample_ids: list[str], sample_cache: dict[str, 
 
 def build_results_table_compact(sample_cache, stats_rows, counts, meta) -> pd.DataFrame:
     sample_ids = sorted(sample_cache)
+    nmf_sample_ids = _nmf_sample_filter(sample_cache)
     sex_map = sba.assign_sex(sample_ids)
     log.info("Running compact NMF on autosomes …")
-    auto_variants = _variant_order("autosomes", counts["autosomes"], meta["autosomes"], len(sample_ids))
-    auto_nmf = _nmf_from_cache("autosomes", sample_ids, sample_cache, auto_variants)
+    auto_variants = _variant_order("autosomes", counts["autosomes"], meta["autosomes"], len(nmf_sample_ids))
+    auto_nmf = pd.DataFrame(np.nan, index=sample_ids, columns=["c1", "c2", "c3"])
+    auto_nmf.update(_nmf_from_cache("autosomes", nmf_sample_ids, sample_cache, auto_variants))
     log.info("Running compact NMF on X chromosome …")
-    x_variants = _variant_order("x", counts["x"], meta["x"], len(sample_ids))
-    x_nmf = _nmf_from_cache("x", sample_ids, sample_cache, x_variants)
+    x_variants = _variant_order("x", counts["x"], meta["x"], len(nmf_sample_ids))
+    x_nmf = pd.DataFrame(np.nan, index=sample_ids, columns=["c1", "c2", "c3"])
+    x_nmf.update(_nmf_from_cache("x", nmf_sample_ids, sample_cache, x_variants))
 
     rows = []
     for sid in sample_ids:

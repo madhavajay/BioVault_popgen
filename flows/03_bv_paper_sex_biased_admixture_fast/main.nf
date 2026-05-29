@@ -79,7 +79,7 @@ process sex_biased_parse_batch {
     stageInMode 'symlink'
     errorStrategy 'terminate'
     maxRetries { params.nextflow.max_retries }
-    maxForks 3
+    maxForks 1
 
     input:
         tuple val(batch_id), val(batch_count), val(participant_ids), val(sexes), path(genotype_files)
@@ -129,8 +129,8 @@ process sex_biased_parse_batch {
     export BIOVAULT_DATA_DIR="\${PWD}/input"
     export BIOVAULT_SEX_MAPPING="\${PWD}/sex_mapping.tsv"
     export BV_BATCH_SIZE="100"
-    export BV_WORKERS="8"
-    export BV_PARALLEL_BATCHES="3"
+    export BV_WORKERS="12"
+    export BV_PARALLEL_BATCHES="1"
     python3 sex_biased_admixture_fast/scripts/fast_sex_biased_admixture.py \\
         --mode parse-batch \\
         --batch-out "compact_batch_${batch_id}"
