@@ -2,7 +2,7 @@ apiVersion: syftbox.openmined.org/v1alpha1
 kind: Flow
 metadata:
   name: 02_bv_paper_gnomad_projection_fast
-  version: 0.1.8
+  version: 0.1.9
 spec:
   inputs:
     samplesheet:

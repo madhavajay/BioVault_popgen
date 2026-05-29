@@ -3,7 +3,7 @@
 // Structure (one Nextflow task PER COUNTRY so each is cached/resumable on its
 // own, and disk stays bounded to a single country's .bvlr at a time):
 //
-//   country_allele_freq  (BIOSYNTH_IMAGE, default ghcr.io/openmined/biosynth:0.1.28)
+//   country_allele_freq  (BIOSYNTH_IMAGE, default ghcr.io/openmined/biosynth:0.1.29)
 //       For ONE country: a single fused `bvs fast-allele-freq` parses every
 //       participant and aggregates -> allele_freq_<country>.tsv in one pass.
 //       No per-participant .bvlr is written (peak disk ~0), parsing runs in
@@ -12,7 +12,7 @@
 //       locus_key; downstream FST/AIMs join on locus_key so results are
 //       unchanged. Runs one country at a time by default (params.country_forks).
 //
-//   population_fst_aims  (ghcr.io/madhavajay/biovault-popgen:0.1.8-fast)
+//   population_fst_aims  (ghcr.io/madhavajay/biovault-popgen:0.1.9-fast)
 //       Gathers every country's outputs, then FST (load/merge -> WC84 ->
 //       visualise) and AIMs (merge w/ bundled gnomAD ref -> differential SNPs
 //       -> AIMs panels). FST/AIMs scripts are BAKED into biovault-popgen at
@@ -23,7 +23,7 @@
 
 nextflow.enable.dsl=2
 
-def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.28'
+def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.29'
 
 def normalizeCountry(String raw) {
     return (raw ?: '')
@@ -157,8 +157,9 @@ process country_allele_freq {
         # ONE fused pass: parse every participant + aggregate -> allele_freq.
         # No per-participant .bvlr written (peak disk ~0); parallel across cores;
         # per-row warnings are coalesced into warnings.log, not streamed per row.
+        # --max-ram-gb 0 = auto (80% of detected/cgroup RAM); set params.max_ram_gb to hard-cap.
         if bvs fast-allele-freq -i geno --threads "\${THREADS}" \\
-            --max-ram-gb ${params.max_ram_gb ?: 18} \\
+            --max-ram-gb ${params.max_ram_gb ?: 0} \\
             --allele-freq-tsv "\${out}" >/dev/null 2>"\${cc}/warnings.log"; then
             [ -s "\${out}" ] || { echo "[${country}] WARNING: empty AF" >&2; rm -f "\${out}"; }
         else
@@ -175,7 +176,7 @@ process country_allele_freq {
 }
 
 process population_fst_aims {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.8-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.9-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy 'terminate'

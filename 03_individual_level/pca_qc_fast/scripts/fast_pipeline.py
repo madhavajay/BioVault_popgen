@@ -799,10 +799,69 @@ def plot_pca() -> None:
             scatter_pca(df, "PC3", "PC4", var_exp, PLOTS_DIR / "pca_pc3_pc4.png")
 
 
+def read_bed_to_dosage(prefix: Path) -> tuple[np.memmap, list[str]]:
+    """Read a PLINK .bed/.bim/.fam into the (n_var x n_samples) int8 dosage memmap
+    the Python QC/PCA backend expects. 2-bit codes: 00->2, 10->1, 11->0, 01->missing
+    (matches build_dosage_memmap's encoding, dosage = count of A1/minor)."""
+    sample_ids = [
+        line.split()[1]
+        for line in prefix.with_suffix(".fam").read_text().splitlines()
+        if line.strip()
+    ]
+    n_samples = len(sample_ids)
+    n_var = sum(1 for line in prefix.with_suffix(".bim").read_text().splitlines() if line.strip())
+    raw = np.fromfile(prefix.with_suffix(".bed"), dtype=np.uint8)
+    if raw.size < 3 or raw[0] != 0x6C or raw[1] != 0x1B or raw[2] != 0x01:
+        raise ValueError(f"{prefix}.bed is not a valid variant-major PLINK bed")
+    body = raw[3:]
+    bytes_per_var = (n_samples + 3) // 4
+    body = body.reshape(n_var, bytes_per_var)
+    # unpack 2-bit codes -> (n_var, bytes_per_var*4)
+    two_bit = np.zeros((n_var, bytes_per_var * 4), dtype=np.uint8)
+    for k in range(4):
+        two_bit[:, k::4] = (body >> (2 * k)) & 0b11
+    two_bit = two_bit[:, :n_samples]
+    dosage = np.memmap(WORK_DIR / "dosage.int8.mmap", dtype=np.int8, mode="w+", shape=(n_var, n_samples))
+    # 00->2, 10->1, 11->0, 01->missing(-1)
+    dosage[:] = np.select(
+        [two_bit == 0b00, two_bit == 0b10, two_bit == 0b11],
+        [np.int8(2), np.int8(1), np.int8(0)],
+        default=MISSING,
+    ).astype(np.int8)
+    dosage.flush()
+    return dosage, sample_ids
+
+
+def run_from_prebuilt_bed(prefix: Path) -> None:
+    """Skip parse/universe/memmap/bed-build: use a prebuilt PLINK bed (e.g. from
+    `bvs cohort-bed`) and run the exact same QC/PCA backend + plots. Keeps outputs
+    byte-identical to the full pipeline because they run on the identical bed."""
+    log.info("Using prebuilt PLINK bed: %s.{bed,bim,fam}", prefix)
+    PLINK_DIR.mkdir(parents=True, exist_ok=True)
+    dest = PLINK_DIR / "genotypes"
+    for ext in ("bed", "bim", "fam"):
+        shutil.copy(str(prefix.with_suffix(f".{ext}")), str(dest.with_suffix(f".{ext}")))
+    if not run_plink_backend_if_requested():
+        dosage, sample_ids = read_bed_to_dosage(dest)
+        qc_idx, sample_keep = qc_filter(dosage)
+        if qc_idx.size == 0:
+            write_empty_pca_outputs("No SNPs remained after call-rate/MAF/HWE filtering; PCA cannot run.")
+            return
+        pruned_idx = ld_prune_streaming(dosage, qc_idx, sample_keep)
+        run_chunked_pca(dosage, pruned_idx, sample_keep, sample_ids)
+    plot_pca()
+
+
 def main() -> None:
     total = time.perf_counter()
     for path in (MERGED_DIR, PLINK_DIR, PCA_DIR, PLOTS_DIR, LOG_DIR, QC_DIR, WORK_DIR):
         path.mkdir(parents=True, exist_ok=True)
+
+    prebuilt = os.environ.get("BV_PREBUILT_BED", "").strip()
+    if prebuilt:
+        run_from_prebuilt_bed(Path(prebuilt))
+        log.info("Fast pipeline (prebuilt bed) complete in %.2fs", time.perf_counter() - total)
+        return
 
     samples = discover_samples()
     log.info("Discovered %d samples", len(samples))

@@ -1,11 +1,18 @@
 // BioVault popgen: within-cohort QC + PCA sanity check.
 //
-// Calls pca_qc_fast/scripts/fast_pipeline.py. That script's BASE_DIR is
-// computed from its own file location, so we copy the script tree into the
-// Nextflow workdir before running, then publish the artefacts out of the
-// resulting `data/`, `plots/`, and `logs/` subdirs.
+// Two-container pipeline (like flow 04):
+//   cohort_bed   (BIOSYNTH_IMAGE) — fast Rust parse of every genotype file into the
+//                cohort PLINK .bed/.bim/.fam via `bvs cohort-bed`. Byte-for-byte
+//                identical to fast_pipeline.py's bed, but parallel + bounded-RAM
+//                (replaces the slow Python parse/memmap that used to OOM at scale).
+//   pca_qc_fast  (biovault-popgen) — runs fast_pipeline.py with BV_PREBUILT_BED set,
+//                so it skips parse/memmap/bed and goes straight to the same plink2
+//                QC/PCA + plots. Outputs are identical (verified) because QC/PCA
+//                runs on the identical bed.
 
 nextflow.enable.dsl=2
+
+def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.29'
 
 workflow USER {
     take:
@@ -51,7 +58,8 @@ workflow USER {
                     items.collect { it[1] }
                 )
             }
-        def qc = pca_qc_fast(collected)
+        def bed = cohort_bed(collected)
+        def qc = pca_qc_fast(bed.bed_dir)
 
     emit:
         eigenvec = qc.eigenvec
@@ -64,15 +72,49 @@ workflow USER {
         warnings = qc.warnings
 }
 
+// Fast cohort PLINK bed build (biosynth). Replaces fast_pipeline.py's slow
+// parse + uint8 memmap + bed write with one parallel, bounded-RAM Rust pass.
+process cohort_bed {
+    container BIOSYNTH_IMAGE
+    // biosynth image sets ENTRYPOINT ["bvs"]; clear it so Nextflow's bash runs.
+    containerOptions '--entrypoint=""'
+    stageInMode 'symlink'
+    errorStrategy { params.nextflow.error_strategy }
+    maxRetries { params.nextflow.max_retries }
+
+    input:
+        tuple val(participant_ids), path(genotype_files)
+
+    output:
+        path "plink_bed", emit: bed_dir
+
+    script:
+    def staging = []
+    participant_ids.eachWithIndex { pid, idx ->
+        def fname = genotype_files[idx].getName()
+        staging << "mkdir -p input/${pid} && ln -s \"../../${fname}\" \"input/${pid}/${fname}\""
+    }
+    """
+    set -euo pipefail
+    mkdir -p input plink_bed
+    ${staging.join('\n    ')}
+    # Parse all samples -> cohort PLINK bed + full SNP-universe snp_info.tsv.
+    # Byte-for-byte identical to fast_pipeline.py; no reference DB needed.
+    bvs cohort-bed -i input \\
+        --out-prefix plink_bed/genotypes \\
+        --snp-info plink_bed/snp_info.tsv
+    """
+}
+
 process pca_qc_fast {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.1.8-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.1.9-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy 'terminate'
     maxRetries { params.nextflow.max_retries }
 
     input:
-        tuple val(participant_ids), path(genotype_files)
+        path bed_dir
 
     output:
         path "pca.eigenvec",     emit: eigenvec
@@ -85,11 +127,6 @@ process pca_qc_fast {
         path "warnings.tsv",     emit: warnings, optional: true
 
     script:
-    def staging = []
-    participant_ids.eachWithIndex { pid, idx ->
-        def fname = genotype_files[idx].getName()
-        staging << "mkdir -p input/${pid} && ln -s \"../../${fname}\" \"input/${pid}/${fname}\""
-    }
     """
     set -euo pipefail
 
@@ -104,22 +141,20 @@ process pca_qc_fast {
     fi
     export HOME=/tmp
 
-    mkdir -p input
-    ${staging.join('\n    ')}
-
-    # The image bakes the script *contents* flat into
-    # /opt/biovault/scripts/pca_qc_fast/ and shared tools into
-    # /opt/biovault/tools.
-    # fast_pipeline.py uses BASE_DIR = Path(__file__).parents[1], so it must
-    # live at <base>/scripts/fast_pipeline.py for outputs to land in
-    # <base>/{data,plots,logs}. Reconstruct that layout in the writable workdir.
-    mkdir -p pca_qc_fast/scripts pca_qc_fast/data pca_qc_fast/plots pca_qc_fast/logs
+    # fast_pipeline.py uses BASE_DIR = Path(__file__).parents[1]; reconstruct the
+    # layout in the writable workdir so outputs land in <base>/{data,plots,logs}.
+    mkdir -p pca_qc_fast/scripts pca_qc_fast/data/plink pca_qc_fast/data/merged pca_qc_fast/plots pca_qc_fast/logs
     cp /opt/biovault/scripts/pca_qc_fast/*.py pca_qc_fast/scripts/
 
     source /opt/conda/etc/profile.d/conda.sh
     conda activate biovault_popgen
 
-    export BIOVAULT_DATA_DIR="\${PWD}/input"
+    # Prebuilt cohort bed from cohort_bed (bvs). fast_pipeline.py skips
+    # parse/memmap/bed and runs the same plink2 QC/PCA + plots on it, so the
+    # eigenvec is identical (verified). snp_info.tsv comes from bvs cohort-bed.
+    export BV_PREBUILT_BED="\${PWD}/${bed_dir}/genotypes"
+    cp "${bed_dir}/snp_info.tsv" pca_qc_fast/data/merged/snp_info.tsv 2>/dev/null || true
+
     set +e
     python3 pca_qc_fast/scripts/fast_pipeline.py
     status=\$?
@@ -128,17 +163,17 @@ process pca_qc_fast {
         mkdir -p pca_qc_fast/logs
         reason="pca_qc_fast failed with exit \${status}"
         if [ "\${status}" -eq 137 ]; then
-            reason="pca_qc_fast was killed with exit 137; this usually means Docker/macOS ran out of memory while processing the compact genotype matrix. Increase Docker memory, reduce selected files, or lower BV_CHUNK_VARIANTS."
+            reason="pca_qc_fast was killed with exit 137 (out of memory during QC/PCA). Increase Docker memory or reduce selected files."
         fi
         {
             printf '%s\\n' "\${reason}"
             printf 'work_dir\\t%s\\n' "\${PWD}"
-            printf 'input_dir\\t%s\\n' "\${BIOVAULT_DATA_DIR}"
+            printf 'bed_dir\\t%s\\n' "${bed_dir}"
         } > pca_qc_fast/logs/failure_summary.txt
         if [ ! -f pca_qc_fast/logs/errors.tsv ]; then
             printf 'participant_id\\tfile\\tseverity\\tcode\\tmessage\\n' > pca_qc_fast/logs/errors.tsv
         fi
-        printf 'COHORT\\t%s\\tERROR\\tPIPELINE_FAILED\\t%s\\n' "\${BIOVAULT_DATA_DIR}" "\${reason}" >> pca_qc_fast/logs/errors.tsv
+        printf 'COHORT\\t%s\\tERROR\\tPIPELINE_FAILED\\t%s\\n' "${bed_dir}" "\${reason}" >> pca_qc_fast/logs/errors.tsv
         [ -f pca_qc_fast/logs/fast_pipeline.log ] && printf '\\nERROR: %s\\n' "\${reason}" >> pca_qc_fast/logs/fast_pipeline.log
         cp pca_qc_fast/logs/failure_summary.txt failure_summary.txt
         cp pca_qc_fast/logs/errors.tsv errors.tsv
