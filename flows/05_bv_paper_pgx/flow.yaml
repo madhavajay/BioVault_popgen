@@ -1,0 +1,33 @@
+apiVersion: syftbox.openmined.org/v1alpha1
+kind: Flow
+metadata:
+  name: 05_bv_paper_pgx
+  version: 0.2.0
+spec:
+  inputs:
+    samplesheet:
+      type: List[GenotypeRecord]
+      description: Genotype samplesheet with participant country and sex facet columns.
+      required_facets:
+        - country
+        - sex
+  steps:
+    - id: pgx
+      uses: ./
+      with:
+        participants: inputs.samplesheet
+      publish:
+        participant_results: File(pgx_participant_results.tsv)
+        country_sex_summary: File(pgx_country_sex_summary.tsv)
+        country_summary: File(pgx_country_summary.tsv)
+        participant_manifest: File(pgx_participant_manifest.tsv)
+        gene_country_burden: File(pgx_gene_country_burden.tsv)
+        gene_country_sex_burden: File(pgx_gene_country_sex_burden.tsv)
+        pgx_plots: File(pgx_plots/*)
+        converted_vcfs: File(vcfs/*.vcf.gz)
+        pharmcat_reports: File(pharmcat_reports/*.report.tsv)
+        pharmcat_json: File(pharmcat_reports/*.report.json)
+        pharmcat_html: File(pharmcat_reports/*.report.html)
+        errors: File(errors.tsv)
+        warnings: File(warnings.tsv)
+        pipeline_log: File(pgx_pipeline.log)
