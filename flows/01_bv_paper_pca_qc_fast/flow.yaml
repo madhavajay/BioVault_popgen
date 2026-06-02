@@ -16,6 +16,7 @@ spec:
         eigenvec: File(pca.eigenvec)
         eigenval: File(pca.eigenval)
         snp_info: File(snp_info.tsv)
+        filtered_snps: File(filtered_snps.tsv)
         pca_pc12_plot: File(pca_pc1_pc2.png)
         pca_pc34_plot: File(pca_pc3_pc4.png)
         pipeline_log: File(fast_pipeline.log)

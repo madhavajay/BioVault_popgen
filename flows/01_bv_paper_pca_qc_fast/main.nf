@@ -65,6 +65,7 @@ workflow USER {
         eigenvec = qc.eigenvec
         eigenval = qc.eigenval
         snp_info = qc.snp_info
+        filtered_snps = qc.filtered_snps
         pca_pc12_plot = qc.pca_pc12_plot
         pca_pc34_plot = qc.pca_pc34_plot
         pipeline_log = qc.pipeline_log
@@ -120,6 +121,7 @@ process pca_qc_fast {
         path "pca.eigenvec",     emit: eigenvec
         path "pca.eigenval",     emit: eigenval
         path "snp_info.tsv",     emit: snp_info
+        path "filtered_snps.tsv", emit: filtered_snps
         path "pca_pc1_pc2.png",  emit: pca_pc12_plot, optional: true
         path "pca_pc3_pc4.png",  emit: pca_pc34_plot, optional: true
         path "fast_pipeline.log", emit: pipeline_log, optional: true
@@ -143,7 +145,7 @@ process pca_qc_fast {
 
     # fast_pipeline.py uses BASE_DIR = Path(__file__).parents[1]; reconstruct the
     # layout in the writable workdir so outputs land in <base>/{data,plots,logs}.
-    mkdir -p pca_qc_fast/scripts pca_qc_fast/data/plink pca_qc_fast/data/merged pca_qc_fast/plots pca_qc_fast/logs
+    mkdir -p pca_qc_fast/scripts pca_qc_fast/data/plink pca_qc_fast/data/merged pca_qc_fast/data/qc pca_qc_fast/plots pca_qc_fast/logs
     cp /opt/biovault/scripts/pca_qc_fast/*.py pca_qc_fast/scripts/
 
     source /opt/conda/etc/profile.d/conda.sh
@@ -186,6 +188,7 @@ process pca_qc_fast {
     cp pca_qc_fast/data/pca/pca.eigenvec       pca.eigenvec
     cp pca_qc_fast/data/pca/pca.eigenval       pca.eigenval
     cp pca_qc_fast/data/merged/snp_info.tsv    snp_info.tsv
+    cp pca_qc_fast/data/qc/filtered_snps.tsv   filtered_snps.tsv
     [ -f pca_qc_fast/plots/pca_pc1_pc2.png ] && cp pca_qc_fast/plots/pca_pc1_pc2.png pca_pc1_pc2.png || true
     [ -f pca_qc_fast/plots/pca_pc3_pc4.png ] && cp pca_qc_fast/plots/pca_pc3_pc4.png pca_pc3_pc4.png || true
     [ -f pca_qc_fast/logs/fast_pipeline.log ] && cp pca_qc_fast/logs/fast_pipeline.log fast_pipeline.log || true

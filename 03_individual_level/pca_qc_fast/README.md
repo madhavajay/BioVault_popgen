@@ -8,6 +8,7 @@ matrices by default:
 
 ```text
 data/merged/snp_info.tsv
+data/qc/filtered_snps.tsv
 data/plink/genotypes.bed
 data/plink/genotypes.bim
 data/plink/genotypes.fam

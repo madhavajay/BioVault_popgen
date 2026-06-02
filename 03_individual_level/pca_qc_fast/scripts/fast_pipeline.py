@@ -58,6 +58,7 @@ QC_DIR = BASE_DIR / "data" / "qc"
 WORK_DIR = BASE_DIR / "data" / "work"
 ERRORS_TSV = LOG_DIR / "errors.tsv"
 WARNINGS_TSV = LOG_DIR / "warnings.tsv"
+FILTERED_SNPS_TSV = QC_DIR / "filtered_snps.tsv"
 
 N_PCS = int(os.environ.get("BV_N_PCS", "20"))
 GENO = float(os.environ.get("BV_GENO", "0.05"))
@@ -78,6 +79,23 @@ BASES = np.array([b"A", b"C", b"G", b"T"], dtype="S1")
 BASE_LABELS = np.array([".", "A", "C", "G", "T"], dtype=object)
 BASE_TO_CODE = {b"A": 1, b"C": 2, b"G": 3, b"T": 4}
 MISSING = np.int8(-1)
+FILTERED_SNPS_COLUMNS = [
+    "variant_index",
+    "rsid",
+    "chromosome",
+    "position",
+    "filter",
+    "n_homref",
+    "n_het",
+    "n_homalt",
+    "n_missing",
+    "frac_homref",
+    "frac_het",
+    "frac_homalt",
+    "call_rate",
+    "maf",
+    "hwe_p",
+]
 
 
 def setup_logging() -> logging.Logger:
@@ -136,6 +154,23 @@ def write_empty_pca_outputs(reason: str) -> None:
     (PCA_DIR / "pca.eigenval").write_text("", encoding="utf-8")
     append_error("COHORT", str(DATA_DIR), "INSUFFICIENT_USABLE_DATA", reason)
     log.error(reason)
+
+
+def ensure_filtered_snps_file() -> None:
+    QC_DIR.mkdir(parents=True, exist_ok=True)
+    if not FILTERED_SNPS_TSV.exists():
+        pd.DataFrame(columns=FILTERED_SNPS_COLUMNS).to_csv(FILTERED_SNPS_TSV, sep="\t", index=False)
+
+
+def write_filtered_snps(df: pd.DataFrame | None = None) -> None:
+    QC_DIR.mkdir(parents=True, exist_ok=True)
+    if df is None or df.empty:
+        pd.DataFrame(columns=FILTERED_SNPS_COLUMNS).to_csv(FILTERED_SNPS_TSV, sep="\t", index=False)
+        return
+    for col in FILTERED_SNPS_COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
+    df[FILTERED_SNPS_COLUMNS].to_csv(FILTERED_SNPS_TSV, sep="\t", index=False)
 
 
 def discover_samples() -> list[tuple[str, Path]]:
@@ -500,6 +535,39 @@ def write_plink_binary(
         )
 
 
+def read_bim_snp_info(prefix: Path) -> pd.DataFrame:
+    bim = prefix.with_suffix(".bim")
+    if not bim.exists():
+        return pd.DataFrame(columns=["rsid", "chromosome", "position"])
+    df = pd.read_csv(
+        bim,
+        sep=r"\s+",
+        header=None,
+        names=["chromosome", "rsid", "cm", "position", "a1", "a2"],
+        dtype={"chromosome": str, "rsid": str},
+    )
+    return df[["rsid", "chromosome", "position"]].copy()
+
+
+def write_plink_filtered_snps(input_prefix: Path, qc_prefix: Path) -> None:
+    input_info = read_bim_snp_info(input_prefix)
+    if input_info.empty:
+        write_filtered_snps(None)
+        return
+    if qc_prefix.with_suffix(".bim").exists():
+        kept_rsids = set(read_bim_snp_info(qc_prefix)["rsid"].astype(str))
+    else:
+        kept_rsids = set()
+    fail = ~input_info["rsid"].astype(str).isin(kept_rsids)
+    if not fail.any():
+        write_filtered_snps(None)
+        return
+    rows = input_info.loc[fail].copy()
+    rows.insert(0, "variant_index", rows.index.astype(np.int64))
+    rows["filter"] = "plink_qc"
+    write_filtered_snps(rows.reset_index(drop=True))
+
+
 def write_legacy_matrices(
     dosage: np.memmap,
     snp_info: pd.DataFrame,
@@ -538,7 +606,7 @@ def class_counts(block: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray,
     )
 
 
-def qc_filter(dosage: np.memmap) -> tuple[np.ndarray, np.ndarray]:
+def qc_filter(dosage: np.memmap, snp_info: pd.DataFrame | None = None) -> tuple[np.ndarray, np.ndarray]:
     n_var, n_samples = dosage.shape
     with timed("Applying chunked sample missingness filter"):
         sample_missing = np.zeros(n_samples, dtype=np.int64)
@@ -589,7 +657,7 @@ def qc_filter(dosage: np.memmap) -> tuple[np.ndarray, np.ndarray]:
                 reason = np.where(~pass_call, "call_rate", np.where(~pass_maf, "maf", "hwe"))
                 idx = np.arange(start, end, dtype=np.int64)[fail]
                 denom = np.where(called[fail] > 0, called[fail], 1)
-                filtered_rows.append(pd.DataFrame({
+                rows = pd.DataFrame({
                     "variant_index": idx,
                     "filter": reason[fail],
                     "n_homref": n_homref[fail],
@@ -602,12 +670,16 @@ def qc_filter(dosage: np.memmap) -> tuple[np.ndarray, np.ndarray]:
                     "call_rate": np.round(call_rate[fail], 6),
                     "maf": np.round(maf[fail], 6),
                     "hwe_p": np.round(hwe_p[fail], 6),
-                }))
+                })
+                if snp_info is not None and not snp_info.empty:
+                    info = snp_info.iloc[idx].reset_index(drop=True)
+                    rows.insert(1, "rsid", info["rsid"].astype(str).to_numpy())
+                    rows.insert(2, "chromosome", info["chromosome"].astype(str).to_numpy())
+                    rows.insert(3, "position", info["position"].to_numpy())
+                filtered_rows.append(rows)
 
     variant_keep = np.concatenate(keep_variants) if keep_variants else np.empty(0, dtype=np.int64)
-    QC_DIR.mkdir(parents=True, exist_ok=True)
-    if filtered_rows:
-        pd.concat(filtered_rows, ignore_index=True).to_csv(QC_DIR / "filtered_snps.tsv", sep="\t", index=False)
+    write_filtered_snps(pd.concat(filtered_rows, ignore_index=True) if filtered_rows else None)
     log.info("After QC filters: %d/%d SNPs retained", variant_keep.size, n_var)
     return variant_keep, sample_keep
 
@@ -739,6 +811,7 @@ def run_plink_backend_if_requested() -> bool:
                         log.warning("%s failed under auto backend; falling back to chunked Python QC/PCA", label)
                         return False
                     raise
+    write_plink_filtered_snps(prefix, qc)
     return True
 
 
@@ -843,7 +916,8 @@ def run_from_prebuilt_bed(prefix: Path) -> None:
         shutil.copy(str(prefix.with_suffix(f".{ext}")), str(dest.with_suffix(f".{ext}")))
     if not run_plink_backend_if_requested():
         dosage, sample_ids = read_bed_to_dosage(dest)
-        qc_idx, sample_keep = qc_filter(dosage)
+        snp_info = read_bim_snp_info(dest)
+        qc_idx, sample_keep = qc_filter(dosage, snp_info)
         if qc_idx.size == 0:
             write_empty_pca_outputs("No SNPs remained after call-rate/MAF/HWE filtering; PCA cannot run.")
             return
@@ -856,6 +930,7 @@ def main() -> None:
     total = time.perf_counter()
     for path in (MERGED_DIR, PLINK_DIR, PCA_DIR, PLOTS_DIR, LOG_DIR, QC_DIR, WORK_DIR):
         path.mkdir(parents=True, exist_ok=True)
+    ensure_filtered_snps_file()
 
     prebuilt = os.environ.get("BV_PREBUILT_BED", "").strip()
     if prebuilt:
@@ -879,7 +954,8 @@ def main() -> None:
     write_legacy_matrices(dosage, snp_info, keep_idx, sample_ids)
 
     if not run_plink_backend_if_requested():
-        qc_idx, sample_keep = qc_filter(dosage)
+        dosage_snp_info = snp_info.iloc[keep_idx].reset_index(drop=True)
+        qc_idx, sample_keep = qc_filter(dosage, dosage_snp_info)
         if qc_idx.size == 0:
             write_empty_pca_outputs("No SNPs remained after call-rate/MAF/HWE filtering; PCA cannot run.")
             return

@@ -56,6 +56,7 @@ COPY tools /opt/biovault/tools
 COPY 00_qc_all_files/scripts /opt/biovault/scripts/qc_all_files
 COPY 03_individual_level/gnomad_projection/scripts /opt/biovault/scripts/gnomad_projection
 COPY 03_individual_level/gnomad_projection_fast/scripts /opt/biovault/scripts/gnomad_projection_fast
+COPY 03_individual_level/hgp1k_projection_fast/scripts /opt/biovault/scripts/hgp1k_projection_fast
 COPY 03_individual_level/pca_qc_fast/scripts /opt/biovault/scripts/pca_qc_fast
 COPY 03_individual_level/sex_biased_admixture/scripts /opt/biovault/scripts/sex_biased_admixture
 COPY 03_individual_level/sex_biased_admixture_fast/scripts /opt/biovault/scripts/sex_biased_admixture_fast
@@ -65,7 +66,8 @@ COPY 04_population_level/fst_aims_fast/scripts /opt/biovault/scripts/population_
 # biosynth container (just `bvs` calls, inlined in main.nf — no baked script
 # needed there); its FST/AIMs step consumes the baked population_level/.
 RUN chmod +x /opt/biovault/scripts/gnomad_projection/*.sh \
-             /opt/biovault/scripts/gnomad_projection_fast/*.sh
+             /opt/biovault/scripts/gnomad_projection_fast/*.sh \
+             /opt/biovault/scripts/hgp1k_projection_fast/*.sh
 
 WORKDIR /work
 
@@ -118,12 +120,14 @@ COPY .docker/reference/aims/gnomad_af_per_locus.tsv /opt/biovault/reference/aims
 COPY tools /opt/biovault/tools
 COPY 00_qc_all_files/scripts /opt/biovault/scripts/qc_all_files
 COPY 03_individual_level/gnomad_projection_fast/scripts /opt/biovault/scripts/gnomad_projection_fast
+COPY 03_individual_level/hgp1k_projection_fast/scripts /opt/biovault/scripts/hgp1k_projection_fast
 COPY 03_individual_level/pca_qc_fast/scripts /opt/biovault/scripts/pca_qc_fast
 COPY 03_individual_level/sex_biased_admixture/scripts /opt/biovault/scripts/sex_biased_admixture
 COPY 03_individual_level/sex_biased_admixture_fast/scripts /opt/biovault/scripts/sex_biased_admixture_fast
 COPY 04_population_level/fst_aims_fast/scripts /opt/biovault/scripts/population_level
 
-RUN chmod +x /opt/biovault/scripts/gnomad_projection_fast/*.sh
+RUN chmod +x /opt/biovault/scripts/gnomad_projection_fast/*.sh \
+             /opt/biovault/scripts/hgp1k_projection_fast/*.sh
 
 WORKDIR /work
 

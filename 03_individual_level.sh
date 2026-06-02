@@ -191,6 +191,7 @@ qc)
     cp "${WORK_BASE}/data/pca/pca.eigenvec" "${TASK_DIR}/" 2>/dev/null || true
     cp "${WORK_BASE}/data/pca/pca.eigenval" "${TASK_DIR}/" 2>/dev/null || true
     cp "${WORK_BASE}/data/merged/snp_info.tsv" "${TASK_DIR}/" 2>/dev/null || true
+    cp "${WORK_BASE}/data/qc/filtered_snps.tsv" "${TASK_DIR}/" 2>/dev/null || true
     cp "${WORK_BASE}/plots/pca_pc1_pc2.png" "${TASK_DIR}/" 2>/dev/null || true
     cp "${WORK_BASE}/plots/pca_pc3_pc4.png" "${TASK_DIR}/" 2>/dev/null || true
     cp "${WORK_BASE}/logs/fast_pipeline.log" "${TASK_DIR}/" 2>/dev/null || true
@@ -198,6 +199,7 @@ qc)
     echo "=== pca_qc_fast outputs (N=${N}) -> ${TASK_DIR} ==="
     for f in \
         "${TASK_DIR}/snp_info.tsv" \
+        "${TASK_DIR}/filtered_snps.tsv" \
         "${TASK_DIR}/pca.eigenvec" \
         "${TASK_DIR}/pca.eigenval" \
         "${TASK_DIR}/pca_pc1_pc2.png" \

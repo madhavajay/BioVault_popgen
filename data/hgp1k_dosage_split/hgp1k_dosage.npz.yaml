@@ -1,0 +1,27 @@
+version: 1
+generated_at: "2026-06-02T00:00:00Z"
+shard_size: "95m"
+archive_format: tar.gz
+file:
+  original: hgp1k_dosage.npz
+  original_size_bytes: 232014638
+  original_b3sum: 6d3c764ee49b77492df579af34e6967b8e6d86bfe860eba43a6d224457b25e77
+archive:
+  name: hgp1k_dosage.npz.tar.gz
+  contents:
+    - hgp1k_dosage.npz
+  shards:
+    - name: hgp1k_dosage.npz.tar.gz.aa
+      size_bytes: 99614720
+      b3sum: 09804a2686bfbdfedd39349f203ef1d5b92ac77a8a0d376fe4fcb49e92207f7c
+    - name: hgp1k_dosage.npz.tar.gz.ab
+      size_bytes: 99614720
+      b3sum: eb488487612ac74ed6d918cbe08ec0b38bda5fedd2d31667242b91f81b8ab592
+    - name: hgp1k_dosage.npz.tar.gz.ac
+      size_bytes: 32725136
+      b3sum: afbf84776488fc7772bada86364a9c79270ae4ff2413e2423cf4a34caaffc091
+instructions:
+  reassemble: cat hgp1k_dosage.npz.tar.gz.a* > hgp1k_dosage.npz.tar.gz
+  extract: tar xzf hgp1k_dosage.npz.tar.gz
+  verify_shards: b3sum hgp1k_dosage.npz.tar.gz.a*
+  verify_original: b3sum hgp1k_dosage.npz

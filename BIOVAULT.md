@@ -80,6 +80,42 @@ Researcher hands BioVault two things:
 Flows consume both via a `List[GenotypeRecord]` samplesheet
 (participant_id + genotype_file path + requested facets).
 
+## Reference prep — 1000 Genomes high-coverage VCFs
+
+Use the repository-level helpers when the local 1KGP high-coverage panel
+needs to be created or refreshed. The fetch step downloads chromosomes
+`1-22` and `X` plus metadata into `data/1kgp_high_coverage/` by default:
+
+```bash
+tools/fetch_1kgp_vcf.sh all
+```
+
+The downloader is resumable. It skips files whose local byte size matches
+the remote file and continues partial downloads when possible. Use
+`OUT_DIR=/path/to/dir` to change the download location, `PARALLEL=N` to
+change concurrent downloads or aria2 split count, and `--no-verify` to
+skip the final VCF sample-label verification.
+
+After the VCFs are present, filter every chromosome to the loci in
+`tools/locus_map.tsv`:
+
+```bash
+tools/filter_1kgp_by_locus_map.sh --force --jobs 6 all
+```
+
+The filtered VCFs and indexes are written to
+`data/1kgp_high_coverage/filtered/`. `--force` replaces existing filtered
+outputs. `--jobs` controls chromosome-level parallelism; each chromosome
+also uses `THREADS` bcftools compression threads (`THREADS=4` by default).
+The filter script checks each input `.tbi` index and rebuilds it if it is
+missing or older than the VCF.
+
+To rerun a subset, pass explicit chromosomes:
+
+```bash
+tools/filter_1kgp_by_locus_map.sh --force --jobs 6 3 4 5 X
+```
+
 ## Step 1 — `bv_paper_pca_qc_fast` (sanity check)
 
 **What it does.** Cohort-internal PCA over the SNPs that pass GENO,

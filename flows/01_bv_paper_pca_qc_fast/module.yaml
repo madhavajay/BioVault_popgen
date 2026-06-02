@@ -43,6 +43,12 @@ spec:
       format:
         kind: tsv
       path: snp_info.tsv
+    - name: filtered_snps
+      type: File
+      description: SNPs removed by call-rate, MAF, HWE, or PLINK QC filters.
+      format:
+        kind: tsv
+      path: filtered_snps.tsv
     - name: pca_pc12_plot
       type: File
       description: PC1 vs PC2 scatter of the cohort.

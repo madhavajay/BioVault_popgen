@@ -115,6 +115,38 @@ Run a pipeline inside the container with:
    bash download_1kgp_high_coverage.sh   # for admixture
    ```
 
+### 1000 Genomes high-coverage VCF prep
+
+The repository-level helper scripts in `tools/` download the full
+1000 Genomes high-coverage phased panel and then filter it to the loci in
+`tools/locus_map.tsv`.
+
+Download all chromosomes (`1-22` and `X`) plus metadata:
+
+```bash
+tools/fetch_1kgp_vcf.sh all
+```
+
+The downloader writes to `data/1kgp_high_coverage/` by default. It is
+resumable: completed files are skipped by comparing local and remote byte
+sizes, and partial downloads continue when possible. Use `--no-verify` to
+skip the final sample-label check, or set `OUT_DIR=/path/to/dir` to use a
+different storage location.
+
+Filter all downloaded VCFs to the project locus map:
+
+```bash
+tools/filter_1kgp_by_locus_map.sh --force --jobs 6 all
+```
+
+Filtered VCFs and `.tbi` indexes are written to
+`data/1kgp_high_coverage/filtered/`. `--force` replaces existing filtered
+outputs. `--jobs` controls how many chromosomes are processed concurrently;
+each chromosome also uses `THREADS` bcftools compression threads
+(`THREADS=4` by default), so choose `JOBS` with available CPUs and disk I/O
+in mind. The filter script checks each input `.tbi` and rebuilds missing or
+stale indexes before filtering.
+
 3. **Run any analysis.** Each analysis directory is self-contained with its own `run_pipeline.sh` (or equivalent) and a `README.md` explaining inputs, outputs, and dependencies.
 
 ## What each analysis answers

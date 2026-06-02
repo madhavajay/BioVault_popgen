@@ -46,6 +46,7 @@ flows/*/assets/
 **/.DS_Store
 
 # Pipeline outputs
+/data/
 results/
 00_qc_test_data/
 01_mock_data_generation/output/

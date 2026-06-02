@@ -1,0 +1,55 @@
+apiVersion: syftbox.openmined.org/v1alpha1
+kind: Module
+metadata:
+  name: 02_bv_paper_hgp1k_projection_fast
+  version: 0.2.0
+  authors:
+    - madhava@openmined.org
+  description: |
+    Joint PCA of BioVault samples and filtered 1000 Genomes high-coverage
+    genotypes on shared locus_map.tsv SNPs. Unlike gnomAD projection, this
+    computes a PCA from the combined 1KGP + study dosage matrix.
+spec:
+  runner:
+    kind: nextflow
+    entrypoint: main.nf
+    template: dynamic-nextflow
+    image: ghcr.io/madhavajay/biovault-popgen:0.2.0-fast
+  inputs:
+    - name: participants
+      type: List[GenotypeRecord]
+      description: CSV/TSV with participant_id and genotype_file columns.
+      format:
+        kind: csv
+        mapping:
+          participant_id: participant_id
+          genotype_file: genotype_file
+  outputs:
+    - name: scores
+      type: File
+      description: PCA scores for 1KGP and BioVault samples.
+      format:
+        kind: tsv
+      path: pca_scores.tsv
+    - name: study_projection_tsv
+      type: File
+      description: Study-only PCA scores in legacy projection TSV shape.
+      format:
+        kind: tsv
+      path: study_pca_projection.tsv
+    - name: allele_freqs
+      type: File
+      description: Per-locus allele frequencies for 1KGP and study samples.
+      format:
+        kind: tsv
+      path: allele_freqs.tsv
+    - name: qc_report
+      type: File
+      description: QC summary.
+      path: qc_report.txt
+    - name: projection_plot
+      type: File
+      description: PC1 vs PC2 scatter of 1KGP and BioVault samples.
+      path: pca_projection.png
+  parameters: []
+  assets: []
