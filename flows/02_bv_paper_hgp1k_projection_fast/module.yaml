@@ -51,5 +51,39 @@ spec:
       type: File
       description: PC1 vs PC2 scatter of 1KGP and BioVault samples.
       path: pca_projection.png
-  parameters: []
+    - name: errors
+      type: File
+      description: Participant-level parse errors, if any.
+      format:
+        kind: tsv
+      path: errors.tsv
+    - name: closest_population_labels
+      type: File
+      description: Ranked nearest 1KGP population centroids for each study sample.
+      format:
+        kind: tsv
+      path: closest_population_labels.tsv
+    - name: closest_population_summary
+      type: File
+      description: Compact closest 1KGP population labels for each study sample.
+      format:
+        kind: tsv
+      path: closest_population_summary.tsv
+    - name: pca_variants_used
+      type: File
+      description: Exact 1KGP/reference variants used in the PCA after duplicate-position and AF/missingness filters.
+      format:
+        kind: tsv
+      path: pca_variants_used.tsv
+    - name: pca_variants_dropped
+      type: File
+      description: Variants dropped before PCA, including duplicate-position drops and AF/reference-missingness filter reasons.
+      format:
+        kind: tsv
+      path: pca_variants_dropped.tsv
+  parameters:
+    - name: hgp1k_image
+      type: String
+      description: Optional Docker image override for testing an unpublished HGP1K image.
+      required: false
   assets: []

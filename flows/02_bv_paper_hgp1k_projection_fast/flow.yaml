@@ -18,3 +18,8 @@ spec:
         allele_freqs: File(allele_freqs.tsv)
         qc_report: File(qc_report.txt)
         projection_plot: File(pca_projection.png)
+        errors: File(errors.tsv)
+        closest_population_labels: File(closest_population_labels.tsv)
+        closest_population_summary: File(closest_population_summary.tsv)
+        pca_variants_used: File(pca_variants_used.tsv)
+        pca_variants_dropped: File(pca_variants_dropped.tsv)

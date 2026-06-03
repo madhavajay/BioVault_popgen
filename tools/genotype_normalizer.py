@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import os
 import re
 import sqlite3
@@ -96,9 +97,16 @@ def emit_parse_warning(
         writer.writerow([str(path), line_no, "WARNING", code, message, raw_line])
 
 
+def _open_text(path: str | Path):
+    path = Path(path)
+    if path.suffix == ".gz":
+        return gzip.open(path, "rt", encoding="utf-8", errors="replace")
+    return open(path, "r", encoding="utf-8", errors="replace")
+
+
 def sniff_format(path: str | Path) -> str:
     """Return 'illumina' or 'ddna' from the first meaningful line."""
-    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+    with _open_text(path) as handle:
         for line in handle:
             text = line.strip()
             if not text:
@@ -319,7 +327,65 @@ def finalize_ddna_frame(df: pd.DataFrame) -> pd.DataFrame:
     return df[CANON].reset_index(drop=True)
 
 
+def _sniff_delimiter(path: str | Path) -> str:
+    with _open_text(path) as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            return "," if stripped.count(",") > stripped.count("\t") else "\t"
+    return "\t"
+
+
+def _looks_like_simple_genotype_table(path: str | Path) -> bool:
+    sep = _sniff_delimiter(path)
+    with _open_text(path) as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            header = [field.strip().lstrip("\ufeff").lower() for field in stripped.split(sep)]
+            return (
+                ("rsid" in header or "id" in header)
+                and ("chrom" in header or "chromosome" in header or "chr" in header)
+                and ("pos" in header or "position" in header)
+                and ("genotype" in header or "gt" in header)
+            )
+    return False
+
+
+def read_simple_genotype_table(path: str | Path) -> pd.DataFrame:
+    sep = _sniff_delimiter(path)
+    df = pd.read_csv(
+        path,
+        sep=sep,
+        dtype=str,
+        na_filter=False,
+        engine="c",
+        skipinitialspace=True,
+        on_bad_lines="skip",
+    )
+    df.columns = [str(col).strip().lstrip("\ufeff") for col in df.columns]
+    columns = {col.lower(): col for col in df.columns}
+    rsid_col = columns.get("rsid") or columns.get("id")
+    chrom_col = columns.get("chrom") or columns.get("chromosome") or columns.get("chr")
+    pos_col = columns.get("pos") or columns.get("position")
+    gt_col = columns.get("genotype") or columns.get("gt")
+    if not rsid_col or not chrom_col or not pos_col or not gt_col:
+        raise ValueError(
+            f"{path}: expected rsid/chrom/pos/genotype columns, got {list(df.columns)}"
+        )
+    out = df[[rsid_col, chrom_col, pos_col, gt_col]].copy()
+    out.columns = ["rsid", "chrom", "pos", "gt"]
+    out["gs"] = np.nan
+    out["baf"] = np.nan
+    out["lrr"] = np.nan
+    return finalize_ddna_frame(out[DDNA_COLS])
+
+
 def read_ddna_fast(path: str | Path) -> pd.DataFrame:
+    if _looks_like_simple_genotype_table(path):
+        return read_simple_genotype_table(path)
     df = pd.read_csv(
         path,
         sep="\t",
@@ -336,8 +402,10 @@ def read_ddna_fast(path: str | Path) -> pd.DataFrame:
 
 
 def read_ddna_robust(path: str | Path) -> pd.DataFrame:
+    if _looks_like_simple_genotype_table(path):
+        return read_simple_genotype_table(path)
     rows: list[list[str]] = []
-    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+    with _open_text(path) as handle:
         for line_no, line in enumerate(handle, start=1):
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
@@ -418,7 +486,7 @@ def _read_illumina_fast(path: str | Path, locus_map: dict[tuple[str, int], str])
         return None
     data_idx = None
     header_idx = None
-    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+    with _open_text(path) as handle:
         for i, line in enumerate(handle):
             if data_idx is None:
                 if line.strip() == "[Data]":
@@ -494,7 +562,7 @@ def _read_illumina_fast(path: str | Path, locus_map: dict[tuple[str, int], str])
 def _read_illumina_robust(path: str | Path, locus_map: dict[tuple[str, int], str] | None = None) -> pd.DataFrame:
     locus_map = locus_map or {}
     rows: list[tuple[str, str, str, str, int, str, float, float, float]] = []
-    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+    with _open_text(path) as handle:
         in_data = False
         idx: dict[str, int] | None = None
         for line_no, line in enumerate(handle, start=1):

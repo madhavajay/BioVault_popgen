@@ -3,7 +3,7 @@
 // Structure (one Nextflow task PER COUNTRY so each is cached/resumable on its
 // own, and disk stays bounded to a single country's .bvlr at a time):
 //
-//   country_allele_freq  (BIOSYNTH_IMAGE, default ghcr.io/openmined/biosynth:0.1.30)
+//   country_allele_freq  (BIOSYNTH_IMAGE, default ghcr.io/openmined/biosynth:0.1.31)
 //       For ONE country: a single fused `bvs fast-allele-freq` parses every
 //       participant and aggregates -> allele_freq_<country>.tsv in one pass.
 //       No per-participant .bvlr is written (peak disk ~0), parsing runs in
@@ -23,7 +23,7 @@
 
 nextflow.enable.dsl=2
 
-def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.30'
+def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.31'
 
 def normalizeCountry(String raw) {
     return (raw ?: '')

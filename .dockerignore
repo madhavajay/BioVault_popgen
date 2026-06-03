@@ -4,6 +4,17 @@
 **/*.py[cod]
 **/.cache/
 
+# Never send private/PGP reference matrices or local private genotype data to
+# Docker build contexts. Public CI images must use .docker/reference/hgp1k/matrix.
+.docker/reference/hgp1k/matrix_pgp/
+data/hgp1k_dosage.npz
+data/1kgp_high_coverage/matrix_pgp/
+data/1kgp_high_coverage/filtered_pgp/
+data/1kgp_high_coverage/**/*.vcf.gz
+data/1kgp_high_coverage/**/*.vcf.gz.tbi
+**/my_private_data/
+**/carika-data/
+
 01_mock_data_generation/output/
 01_mock_data_generation/scripts/out/
 

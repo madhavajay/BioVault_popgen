@@ -12,7 +12,7 @@
 
 nextflow.enable.dsl=2
 
-def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.30'
+def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.31'
 
 workflow USER {
     take:

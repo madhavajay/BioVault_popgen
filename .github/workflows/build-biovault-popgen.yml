@@ -29,6 +29,7 @@ on:
       - environment.yml
       - environment.fast.yml
       - build_docker.sh
+      - "data/hgp1k_dosage_split/**"
       - ".docker/reference/pca_loadings/**"
       - ".docker/reference/aims/**"
       - "03_individual_level/**/scripts/**"
@@ -82,6 +83,38 @@ jobs:
           # partial/older key is useless — require an exact hit.
           lookup-only: false
 
+      - name: Reconstruct public HGP1K matrix from split archive
+        run: |
+          set -euo pipefail
+          matrix_dir=".docker/reference/hgp1k/matrix"
+          matrix_npz="${matrix_dir}/hgp1k_dosage.npz"
+          split_dir="data/hgp1k_dosage_split"
+          mkdir -p "${matrix_dir}" .docker/reference/hgp1k
+
+          if [ ! -s "${matrix_npz}" ]; then
+            for f in \
+              "${split_dir}/hgp1k_dosage.npz.tar.gz.aa" \
+              "${split_dir}/hgp1k_dosage.npz.tar.gz.ab" \
+              "${split_dir}/hgp1k_dosage.npz.tar.gz.ac" ; do
+              if [ ! -s "$f" ]; then
+                echo "::error::missing HGP1K split archive shard: $f"
+                exit 1
+              fi
+            done
+            tmpdir="$(mktemp -d)"
+            cat "${split_dir}"/hgp1k_dosage.npz.tar.gz.* > "${tmpdir}/hgp1k_dosage.npz.tar.gz"
+            tar -xzf "${tmpdir}/hgp1k_dosage.npz.tar.gz" -C "${tmpdir}"
+            mv "${tmpdir}/hgp1k_dosage.npz" "${matrix_npz}"
+            rm -rf "${tmpdir}"
+          fi
+
+          metadata=".docker/reference/hgp1k/20130606_g1k_3202_samples_ped_population.txt"
+          if [ ! -s "${metadata}" ] && [ -s "data/1kgp_high_coverage/20130606_g1k_3202_samples_ped_population.txt" ]; then
+            cp "data/1kgp_high_coverage/20130606_g1k_3202_samples_ped_population.txt" "${metadata}"
+          fi
+
+          ls -lh "${matrix_npz}"
+
       - name: Verify reference cache is present (fail fast otherwise)
         run: |
           set -euo pipefail
@@ -90,12 +123,19 @@ jobs:
             .docker/reference/pca_loadings/gnomad.v3.1.pca_loadings.ht.tar.gz \
             .docker/reference/pca_loadings/loadings_variants.tsv \
             .docker/reference/pca_loadings/loadings.npz \
-            .docker/reference/aims/gnomad_af_per_locus.tsv ; do
+            .docker/reference/aims/gnomad_af_per_locus.tsv \
+            .docker/reference/hgp1k/matrix/hgp1k_dosage.npz \
+            .docker/reference/hgp1k/20130606_g1k_3202_samples_ped_population.txt ; do
             if [ ! -s "$f" ] && [ ! -e "$f" ]; then
               echo "::error::missing reference cache file: $f"
               missing=1
             fi
           done
+          if [ -e .docker/reference/hgp1k/matrix_pgp ]; then
+            echo "::error::PGP/private HGP1K matrix cache is present in CI workspace"
+            echo "::error::Refusing public build; remove .docker/reference/hgp1k/matrix_pgp from the cache"
+            missing=1
+          fi
           if [ "$missing" -ne 0 ]; then
             echo "::error::Reference cache absent. CI will NOT regenerate it"
             echo "::error::(needs gsutil + Hail + ~260 GB VCFs). Prime the"
@@ -134,6 +174,10 @@ jobs:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
           VERSION: ${{ steps.ver.outputs.version }}
           BUILD_FAST: "0"
+          BUILD_FAST_PGP: "0"
+          TAG_PGP_AS_FAST: "0"
+          HGP1K_DEFAULT_MATRIX_SOURCE: ${{ github.workspace }}/.docker/reference/hgp1k/matrix/hgp1k_dosage.npz
+          HGP1K_METADATA_SOURCE: ${{ github.workspace }}/.docker/reference/hgp1k/20130606_g1k_3202_samples_ped_population.txt
           # Belt & braces: this stays 0 so build_docker.sh's cache-skip
           # logic never triggers the gsutil/Hail/VCF derivations.
           FORCE_REFERENCE_CACHE: "0"
@@ -159,6 +203,8 @@ jobs:
           context: .
           file: Dockerfile
           target: fast-runtime
+          build-args: |
+            HGP1K_REFERENCE_SUBDIR=matrix
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |

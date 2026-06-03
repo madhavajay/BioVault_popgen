@@ -7,9 +7,32 @@
 #   PLATFORM=linux/arm64 ./build_docker.sh
 #   BUILD_RUNTIME=0 PLATFORM=linux/arm64 ./build_docker.sh # build fast image only
 #   BUILD_FAST=0 ./build_docker.sh                    # skip :<version>-fast + :fast
+#   BUILD_FAST_PGP=1 BUILD_RUNTIME=0 BUILD_FAST=0 ./build_docker.sh
+#   ./build_docker.sh --with-pgp-fast                 # also build :<version>-fast-pgp
+#   ./build_docker.sh --pgp-fast-only --tag-pgp-as-fast
 #   FORCE_REFERENCE_CACHE=1 ./build_docker.sh         # re-mirror loadings cache from GCS
 
 set -euo pipefail
+
+for arg in "$@"; do
+  case "${arg}" in
+    --with-pgp-fast)
+      BUILD_FAST_PGP=1
+      ;;
+    --pgp-fast-only)
+      BUILD_RUNTIME=0
+      BUILD_FAST=0
+      BUILD_FAST_PGP=1
+      ;;
+    --tag-pgp-as-fast)
+      TAG_PGP_AS_FAST=1
+      ;;
+    *)
+      echo "ERROR: unknown argument: ${arg}" >&2
+      exit 2
+      ;;
+  esac
+done
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VERSION="${VERSION:-0.2.0}"
@@ -19,9 +42,13 @@ IMAGE_LATEST="${IMAGE_NAME}:latest"
 FAST_VERSION="${FAST_VERSION:-${VERSION}-fast}"
 IMAGE_FAST_VERSIONED="${IMAGE_NAME}:${FAST_VERSION}"
 IMAGE_FAST_LATEST="${IMAGE_NAME}:fast"
+PGP_FAST_VERSION="${PGP_FAST_VERSION:-${VERSION}-fast-pgp}"
+IMAGE_FAST_PGP_VERSIONED="${IMAGE_NAME}:${PGP_FAST_VERSION}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 BUILD_RUNTIME="${BUILD_RUNTIME:-1}"
 BUILD_FAST="${BUILD_FAST:-1}"
+BUILD_FAST_PGP="${BUILD_FAST_PGP:-0}"
+TAG_PGP_AS_FAST="${TAG_PGP_AS_FAST:-0}"
 TOOLS_IMAGE="${TOOLS_IMAGE:-${IMAGE_NAME}:tools}"
 LOADINGS_HT_SOURCE="${LOADINGS_HT_SOURCE:-gs://gcp-public-data--gnomad/release/3.1/pca/gnomad.v3.1.pca_loadings.ht}"
 CACHE_DIR="${ROOT_DIR}/.docker/reference/pca_loadings"
@@ -32,6 +59,34 @@ AIMS_CACHE_DIR="${ROOT_DIR}/.docker/reference/aims"
 AIMS_AF_TSV="${AIMS_CACHE_DIR}/gnomad_af_per_locus.tsv"
 HGDP_TGP_VCF_DIR="${HGDP_TGP_VCF_DIR:-${ROOT_DIR}/.docker/reference/hgdp_tgp_vcf}"
 HGDP_TGP_PANEL="${ROOT_DIR}/03_individual_level/gnomad_projection/reference/panel_hgdp_tgp.tsv"
+HGP1K_REF_CACHE="${ROOT_DIR}/.docker/reference/hgp1k"
+HGP1K_METADATA_SOURCE="${HGP1K_METADATA_SOURCE:-${ROOT_DIR}/data/1kgp_high_coverage/20130606_g1k_3202_samples_ped_population.txt}"
+HGP1K_DEFAULT_MATRIX_SOURCE="${HGP1K_DEFAULT_MATRIX_SOURCE:-${ROOT_DIR}/data/1kgp_high_coverage/matrix/hgp1k_dosage.npz}"
+HGP1K_PGP_MATRIX_SOURCE="${HGP1K_PGP_MATRIX_SOURCE:-${ROOT_DIR}/data/1kgp_high_coverage/matrix_pgp/hgp1k_dosage.npz}"
+
+prepare_hgp1k_reference() {
+  local subdir="$1"
+  local matrix_source="$2"
+  local source_dir
+  local dest_dir
+  source_dir="$(dirname "${matrix_source}")"
+  dest_dir="${HGP1K_REF_CACHE}/${subdir}"
+  [ -s "${matrix_source}" ] || { echo "ERROR: missing HGP1K matrix ${matrix_source}" >&2; exit 1; }
+  [ -s "${HGP1K_METADATA_SOURCE}" ] || { echo "ERROR: missing HGP1K metadata ${HGP1K_METADATA_SOURCE}" >&2; exit 1; }
+  mkdir -p "${dest_dir}" "${HGP1K_REF_CACHE}"
+  if [ "${matrix_source}" != "${dest_dir}/hgp1k_dosage.npz" ]; then
+    cp "${matrix_source}" "${dest_dir}/hgp1k_dosage.npz"
+  fi
+  for name in samples.tsv variants.tsv matrix_report.txt matrix_preview.tsv; do
+    if [ -s "${source_dir}/${name}" ]; then
+      cp "${source_dir}/${name}" "${dest_dir}/${name}"
+    fi
+  done
+  if [ "${HGP1K_METADATA_SOURCE}" != "${HGP1K_REF_CACHE}/20130606_g1k_3202_samples_ped_population.txt" ]; then
+    cp "${HGP1K_METADATA_SOURCE}" "${HGP1K_REF_CACHE}/20130606_g1k_3202_samples_ped_population.txt"
+  fi
+  echo "Prepared HGP1K reference ${subdir}: ${dest_dir}/hgp1k_dosage.npz"
+}
 
 NEEDS_TOOLS=0
 [ "${BUILD_RUNTIME}" = "1" ] && NEEDS_TOOLS=1
@@ -142,8 +197,10 @@ else
 fi
 
 if [ "${BUILD_RUNTIME}" = "1" ]; then
+  prepare_hgp1k_reference matrix "${HGP1K_DEFAULT_MATRIX_SOURCE}"
   docker build \
     --platform "${PLATFORM}" \
+    --build-arg HGP1K_REFERENCE_SUBDIR=matrix \
     --target runtime \
     -f "${ROOT_DIR}/Dockerfile" \
     -t "${IMAGE_VERSIONED}" \
@@ -152,13 +209,30 @@ if [ "${BUILD_RUNTIME}" = "1" ]; then
 fi
 
 if [ "${BUILD_FAST}" = "1" ]; then
+  prepare_hgp1k_reference matrix "${HGP1K_DEFAULT_MATRIX_SOURCE}"
   docker build \
     --platform "${PLATFORM}" \
+    --build-arg HGP1K_REFERENCE_SUBDIR=matrix \
     --target fast-runtime \
     -f "${ROOT_DIR}/Dockerfile" \
     -t "${IMAGE_FAST_VERSIONED}" \
     -t "${IMAGE_FAST_LATEST}" \
     "${ROOT_DIR}"
+fi
+
+if [ "${BUILD_FAST_PGP}" = "1" ]; then
+  prepare_hgp1k_reference matrix_pgp "${HGP1K_PGP_MATRIX_SOURCE}"
+  docker build \
+    --platform "${PLATFORM}" \
+    --build-arg HGP1K_REFERENCE_SUBDIR=matrix_pgp \
+    --target fast-runtime \
+    -f "${ROOT_DIR}/Dockerfile" \
+    -t "${IMAGE_FAST_PGP_VERSIONED}" \
+    "${ROOT_DIR}"
+  if [ "${TAG_PGP_AS_FAST}" = "1" ]; then
+    docker tag "${IMAGE_FAST_PGP_VERSIONED}" "${IMAGE_FAST_VERSIONED}"
+    docker tag "${IMAGE_FAST_PGP_VERSIONED}" "${IMAGE_FAST_LATEST}"
+  fi
 fi
 
 echo
@@ -170,4 +244,11 @@ fi
 if [ "${BUILD_FAST}" = "1" ]; then
   echo "  ${IMAGE_FAST_VERSIONED}"
   echo "  ${IMAGE_FAST_LATEST}"
+fi
+if [ "${BUILD_FAST_PGP}" = "1" ]; then
+  echo "  ${IMAGE_FAST_PGP_VERSIONED}"
+  if [ "${TAG_PGP_AS_FAST}" = "1" ]; then
+    echo "  ${IMAGE_FAST_VERSIONED} (retagged from ${IMAGE_FAST_PGP_VERSIONED})"
+    echo "  ${IMAGE_FAST_LATEST} (retagged from ${IMAGE_FAST_PGP_VERSIONED})"
+  fi
 fi

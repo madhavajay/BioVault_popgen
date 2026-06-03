@@ -220,7 +220,7 @@ flow.
 **Internal stages** (two containers, orchestrated by Nextflow — the
 desktop runner pre-pulls every per-process `container` it finds):
 
-1. **Split by country** — `container ghcr.io/openmined/biosynth:0.1.30`.
+1. **Split by country** — `container ghcr.io/openmined/biosynth:0.1.31`.
    Per-participant `bvs emit-long`, then per-country
    `bvs aggregate-long` → `allele_freq_<country>.tsv`. The country label
    is the facet value normalized: trim → lowercase → non-alphanumeric
@@ -437,7 +437,7 @@ Expected slow output roots:
 | `01_bv_paper_pca_qc_fast`                  | 1    | `ghcr.io/madhavajay/biovault-popgen:0.2.0-fast` |
 | `02_bv_paper_gnomad_projection_fast`       | 2    | `ghcr.io/madhavajay/biovault-popgen:0.2.0-fast` |
 | `03_bv_paper_sex_biased_admixture_fast`    | 3    | `ghcr.io/madhavajay/biovault-popgen:0.2.0-fast` |
-| `04_bv_paper_population_level`             | 4    | `ghcr.io/openmined/biosynth:0.1.30` + `ghcr.io/madhavajay/biovault-popgen:0.2.0-fast` |
+| `04_bv_paper_population_level`             | 4    | `ghcr.io/openmined/biosynth:0.1.31` + `ghcr.io/madhavajay/biovault-popgen:0.2.0-fast` |
 
 Each flow lives at `flows/<name>/` with `flow.yaml`, `module.yaml`, and
 `main.nf`. Inputs are a `List[GenotypeRecord]` samplesheet; outputs are

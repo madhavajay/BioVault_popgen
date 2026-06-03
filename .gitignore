@@ -19,6 +19,7 @@ __pycache__/
 .docker/reference/pca_loadings/gnomad.v3.1.pca_loadings.ht/
 .docker/reference/aims/*
 !.docker/reference/aims/gnomad_af_per_locus.tsv
+.docker/reference/hgp1k/
 .docker/reference/hgdp_tgp_vcf/
 .docker/conda_envs/
 .claude/
