@@ -46,11 +46,11 @@ def main() -> None:
 
     v = args.version
     bio_patterns = [
-        (r"VERSION=0\.1\.\d+ \./build_docker\.sh", f"VERSION={v} ./build_docker.sh"),
-        (r'VERSION="\$\{VERSION:-0\.1\.\d+\}"', f'VERSION="${{VERSION:-{v}}}"'),
-        (r"ghcr\.io/madhavajay/biovault-popgen:0\.1\.\d+-fast", f"ghcr.io/madhavajay/biovault-popgen:{v}-fast"),
-        (r"ghcr\.io/madhavajay/biovault-popgen:0\.1\.\d+(?!-fast)", f"ghcr.io/madhavajay/biovault-popgen:{v}"),
-        (r"version: 0\.1\.\d+", f"version: {v}"),
+        (r"VERSION=\d+\.\d+\.\d+ \./build_docker\.sh", f"VERSION={v} ./build_docker.sh"),
+        (r'VERSION="\$\{VERSION:-\d+\.\d+\.\d+\}"', f'VERSION="${{VERSION:-{v}}}"'),
+        (r"ghcr\.io/madhavajay/biovault-popgen:\d+\.\d+\.\d+-fast", f"ghcr.io/madhavajay/biovault-popgen:{v}-fast"),
+        (r"ghcr\.io/madhavajay/biovault-popgen:\d+\.\d+\.\d+(?!-fast)", f"ghcr.io/madhavajay/biovault-popgen:{v}"),
+        (r"version: \d+\.\d+\.\d+", f"version: {v}"),
     ]
 
     files: set[Path] = {

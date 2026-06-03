@@ -10,7 +10,7 @@ if (!params.containsKey('biosynth_image')) {
 }
 
 def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: (params.biosynth_image ?: 'ghcr.io/openmined/biosynth:0.1.31')
-def FIND_K_IMAGE = params.find_k_image ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.0-fast'
+def FIND_K_IMAGE = params.find_k_image ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.1-fast'
 
 def ancestryValue(record) {
     def facets = record.facets ?: [:]

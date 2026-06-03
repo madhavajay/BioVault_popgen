@@ -1,7 +1,7 @@
 // BioVault popgen: joint BioVault + 1000 Genomes high-coverage PCA.
 //
 // Structure:
-//   hgp1k_projection_fast (ghcr.io/madhavajay/biovault-popgen:0.2.0-fast)
+//   hgp1k_projection_fast (ghcr.io/madhavajay/biovault-popgen:0.2.1-fast)
 //       Runs `bvs target-study-dosage` once to build an HGP1K-aligned study
 //       dosage matrix plus study AF TSV, then builds the 1KGP + BioVault PCA.
 
@@ -57,7 +57,7 @@ workflow USER {
 }
 
 process hgp1k_projection_fast {
-    container "${params.hgp1k_image ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.0-fast'}"
+    container "${params.hgp1k_image ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.1-fast'}"
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy 'terminate'

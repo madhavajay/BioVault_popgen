@@ -2,7 +2,7 @@ apiVersion: syftbox.openmined.org/v1alpha1
 kind: Module
 metadata:
   name: 02_bv_paper_gnomad_projection_fast
-  version: 0.2.0
+  version: 0.2.1
   authors:
     - madhava@openmined.org
   description: |
@@ -16,7 +16,7 @@ spec:
     kind: nextflow
     entrypoint: main.nf
     template: dynamic-nextflow
-    image: ghcr.io/madhavajay/biovault-popgen:0.2.0-fast
+    image: ghcr.io/madhavajay/biovault-popgen:0.2.1-fast
   inputs:
     - name: participants
       type: List[GenotypeRecord]
