@@ -89,7 +89,7 @@ prepare_hgp1k_reference() {
     cp "${matrix_source}" "${dest_dir}/hgp1k_dosage.npz"
   fi
   for name in samples.tsv variants.tsv matrix_report.txt matrix_preview.tsv; do
-    if [ -s "${source_dir}/${name}" ]; then
+    if [ -s "${source_dir}/${name}" ] && [ "${source_dir}/${name}" != "${dest_dir}/${name}" ]; then
       cp "${source_dir}/${name}" "${dest_dir}/${name}"
     fi
   done
