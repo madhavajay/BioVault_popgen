@@ -83,6 +83,14 @@ jobs:
           # partial/older key is useless — require an exact hit.
           lookup-only: false
 
+      - name: Set up Python for HGP1K sidecars
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install HGP1K sidecar writer dependencies
+        run: python -m pip install numpy
+
       - name: Reconstruct public HGP1K matrix from split archive
         run: |
           set -euo pipefail
@@ -113,6 +121,10 @@ jobs:
             cp "data/1kgp_high_coverage/20130606_g1k_3202_samples_ped_population.txt" "${metadata}"
           fi
 
+          if [ ! -s "${matrix_dir}/samples.tsv" ] || [ ! -s "${matrix_dir}/variants.tsv" ]; then
+            python scripts/write_hgp1k_sidecars.py "${matrix_npz}" "${matrix_dir}"
+          fi
+
           ls -lh "${matrix_npz}"
 
       - name: Verify reference cache is present (fail fast otherwise)
@@ -125,6 +137,8 @@ jobs:
             .docker/reference/pca_loadings/loadings.npz \
             .docker/reference/aims/gnomad_af_per_locus.tsv \
             .docker/reference/hgp1k/matrix/hgp1k_dosage.npz \
+            .docker/reference/hgp1k/matrix/samples.tsv \
+            .docker/reference/hgp1k/matrix/variants.tsv \
             .docker/reference/hgp1k/20130606_g1k_3202_samples_ped_population.txt ; do
             if [ ! -s "$f" ] && [ ! -e "$f" ]; then
               echo "::error::missing reference cache file: $f"

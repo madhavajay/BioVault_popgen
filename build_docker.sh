@@ -64,6 +64,17 @@ HGP1K_METADATA_SOURCE="${HGP1K_METADATA_SOURCE:-${ROOT_DIR}/data/1kgp_high_cover
 HGP1K_DEFAULT_MATRIX_SOURCE="${HGP1K_DEFAULT_MATRIX_SOURCE:-${ROOT_DIR}/data/1kgp_high_coverage/matrix/hgp1k_dosage.npz}"
 HGP1K_PGP_MATRIX_SOURCE="${HGP1K_PGP_MATRIX_SOURCE:-${ROOT_DIR}/data/1kgp_high_coverage/matrix_pgp/hgp1k_dosage.npz}"
 
+write_hgp1k_sidecars_from_npz() {
+  local dest_dir="$1"
+  local python_bin
+  if [ -x "${ROOT_DIR}/.venv/bin/python" ]; then
+    python_bin="${ROOT_DIR}/.venv/bin/python"
+  else
+    python_bin="${PYTHON:-python3}"
+  fi
+  "${python_bin}" "${ROOT_DIR}/scripts/write_hgp1k_sidecars.py" "${dest_dir}/hgp1k_dosage.npz" "${dest_dir}"
+}
+
 prepare_hgp1k_reference() {
   local subdir="$1"
   local matrix_source="$2"
@@ -82,6 +93,9 @@ prepare_hgp1k_reference() {
       cp "${source_dir}/${name}" "${dest_dir}/${name}"
     fi
   done
+  if [ ! -s "${dest_dir}/samples.tsv" ] || [ ! -s "${dest_dir}/variants.tsv" ]; then
+    write_hgp1k_sidecars_from_npz "${dest_dir}"
+  fi
   if [ "${HGP1K_METADATA_SOURCE}" != "${HGP1K_REF_CACHE}/20130606_g1k_3202_samples_ped_population.txt" ]; then
     cp "${HGP1K_METADATA_SOURCE}" "${HGP1K_REF_CACHE}/20130606_g1k_3202_samples_ped_population.txt"
   fi
