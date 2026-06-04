@@ -23,7 +23,7 @@ Attribution: the original population-genetics analysis work was done by
 intent while adapting the implementation for local Docker and Nextflow
 execution.
 
-The four flows are independent — each consumes the same
+The numbered analysis flows are independent — each consumes the same
 `List[GenotypeRecord]` samplesheet and none chains its outputs into
 another. The order below is the recommended workflow, not a data
 dependency. The only real data dependency is *inside* flow 4, where the
@@ -261,6 +261,48 @@ VCFs once and `build/derive_gnomad_aims_af.py` derives the small
 image (at `/opt/biovault/reference/aims/`). Runtime never touches the
 VCFs.
 
+## Step 5 — `bv_paper_pgx` (PharmCAT pharmacogenomics)
+
+**What it does.** Converts each selected participant genotype TXT to a
+compressed VCF with biosynth, runs the Docker PharmCAT pipeline on each
+VCF, and aggregates per-gene PGx calls by `country` and `sex`. The
+summary plots treat non-reference / non-wildtype PharmCAT diplotypes as a
+PGx call-burden signal, since PharmCAT report TSVs do not include
+population allele frequencies.
+
+**Input.** Same `List[GenotypeRecord]` samplesheet as the other flows,
+plus required `country` and `sex` facets.
+
+**Internal stages** (two containers, orchestrated by Nextflow):
+
+1. **Genotype TXT → VCF** — `container ghcr.io/openmined/biosynth:0.1.31`.
+   Runs `bvs genotype-to-vcf -i <genotype.txt> --output <id>.vcf.gz --gzip`
+   per participant.
+2. **PharmCAT** — `container pgkb/pharmcat`. Runs `pharmcat_pipeline`
+   with HTML, JSON, and calls-only TSV reports enabled.
+3. **Aggregation** — adds `country` and `sex` facets to every PharmCAT
+   gene row, then writes both country+sex counts and country-only counts.
+4. **Visualization** — `04_population_level/pgx/plot_pgx_accumulation.py`
+   writes country and country+sex heatmaps showing where non-reference PGx
+   calls accumulate by gene, plus a top-gene burden bar chart.
+
+**Outputs**
+- `pgx_participant_results.tsv` — one row per participant and PharmCAT
+  gene result, with `country` and `sex` columns.
+- `pgx_country_sex_summary.tsv` — counts grouped by country, sex, gene,
+  diplotype, and phenotype.
+- `pgx_country_summary.tsv` — same counts grouped by country only,
+  summing across sex.
+- `pgx_participant_manifest.tsv` — successful participant/facet manifest.
+- `pgx_gene_country_burden.tsv` — non-reference PGx call rate/count by
+  country and gene.
+- `pgx_gene_country_sex_burden.tsv` — non-reference PGx call rate/count
+  by country, sex, and gene.
+- `pgx_plots/*` — heatmaps and the top-gene burden chart as PNG/PDF.
+- `vcfs/*.vcf.gz` — per-participant compressed VCFs.
+- `pharmcat_reports/*.report.tsv`, `*.report.json`, `*.report.html` —
+  per-participant PharmCAT reports.
+
 ## Declared outputs and raw-data boundary
 
 The flows publish only declared headline artifacts from each process
@@ -282,6 +324,13 @@ Declared flow outputs are:
   `merged_allele_freq_annotated.tsv`, `master_af_table.tsv`,
   `all_outliers_long.tsv`, `aims_combined.tsv`,
   `population_level_summary.txt`, and FST/AIMs plots.
+- `05_bv_paper_pgx`: `pgx_participant_results.tsv`,
+  `pgx_country_sex_summary.tsv`, `pgx_country_summary.tsv`,
+  `pgx_participant_manifest.tsv`, `pgx_gene_country_burden.tsv`,
+  `pgx_gene_country_sex_burden.tsv`, `pgx_plots/*`, `vcfs/*.vcf.gz`,
+  `pharmcat_reports/*.report.tsv`, `pharmcat_reports/*.report.json`,
+  `pharmcat_reports/*.report.html`, `errors.tsv`, `warnings.tsv`,
+  `pgx_pipeline.log`.
 
 None of these are raw participant genotype files or PLINK BED/BIM/FAM
 intermediates. `merged_allele_freq_annotated.tsv` is an aggregate
@@ -438,6 +487,7 @@ Expected slow output roots:
 | `02_bv_paper_gnomad_projection_fast`       | 2    | `ghcr.io/madhavajay/biovault-popgen:0.2.1-fast` |
 | `03_bv_paper_sex_biased_admixture_fast`    | 3    | `ghcr.io/madhavajay/biovault-popgen:0.2.1-fast` |
 | `04_bv_paper_population_level`             | 4    | `ghcr.io/openmined/biosynth:0.1.31` + `ghcr.io/madhavajay/biovault-popgen:0.2.1-fast` |
+| `05_bv_paper_pgx`                          | 5    | `ghcr.io/openmined/biosynth:0.1.31` + `pgkb/pharmcat` + `ghcr.io/madhavajay/biovault-popgen:0.2.1-fast` |
 
 Each flow lives at `flows/<name>/` with `flow.yaml`, `module.yaml`, and
 `main.nf`. Inputs are a `List[GenotypeRecord]` samplesheet; outputs are
