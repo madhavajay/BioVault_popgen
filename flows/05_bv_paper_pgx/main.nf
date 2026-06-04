@@ -16,6 +16,7 @@ nextflow.enable.dsl=2
 
 def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.31'
 def PHARMCAT_IMAGE = System.getenv('PHARMCAT_IMAGE') ?: 'pgkb/pharmcat'
+def POPGEN_IMAGE = System.getenv('POPGEN_IMAGE') ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.1-fast'
 
 def normalizeFacet(String raw) {
     return (raw ?: '').trim()
@@ -152,7 +153,7 @@ process pharmcat_pipeline {
 }
 
 process aggregate_pgx {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.2.2-fast'
+    container POPGEN_IMAGE
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy 'terminate'
@@ -171,7 +172,7 @@ process aggregate_pgx {
         path "pgx_gene_country_burden.tsv", emit: gene_country_burden
         path "pgx_plots/*", emit: pgx_plots
         path "vcfs/*.vcf*", emit: converted_vcfs
-        path "pharmcat_reports/*.report.tsv", emit: pharmcat_reports
+        path "pharmcat_reports/*", emit: pharmcat_reports
         path "pharmcat_reports/*.report.json", emit: pharmcat_json, optional: true
         path "pharmcat_reports/*.report.html", emit: pharmcat_html, optional: true
         path "errors.tsv", emit: errors
@@ -365,7 +366,11 @@ for report_dir in sorted(Path(".").glob("pharmcat_*")):
         "prefix": prefix,
     })
 
-    for artifact in report_dir.glob("*.report.*"):
+    for artifact in report_dir.iterdir():
+        if not artifact.is_file():
+            continue
+        if artifact.name == "metadata.tsv":
+            continue
         target = Path("pharmcat_reports") / f"{prefix}{''.join(artifact.suffixes)}"
         target.write_bytes(artifact.read_bytes())
 

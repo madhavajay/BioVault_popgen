@@ -24,7 +24,7 @@ spec:
         gene_country_burden: File(pgx_gene_country_burden.tsv)
         pgx_plots: File(pgx_plots/*)
         converted_vcfs: File(vcfs/*.vcf.gz)
-        pharmcat_reports: File(pharmcat_reports/*.report.tsv)
+        pharmcat_reports: File(pharmcat_reports/*)
         pharmcat_json: File(pharmcat_reports/*.report.json)
         pharmcat_html: File(pharmcat_reports/*.report.html)
         errors: File(errors.tsv)

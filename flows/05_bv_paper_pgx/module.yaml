@@ -81,8 +81,8 @@ spec:
       cardinality: many
     - name: pharmcat_reports
       type: File
-      description: Per-participant PharmCAT report TSVs.
-      glob: pharmcat_reports/*.report.tsv
+      description: Per-participant original PharmCAT output files.
+      glob: pharmcat_reports/*
       cardinality: many
     - name: pharmcat_json
       type: File

@@ -115,7 +115,7 @@ prepare_hgp1k_reference() {
   if [ "${HGP1K_METADATA_SOURCE}" != "${HGP1K_REF_CACHE}/20130606_g1k_3202_samples_ped_population.txt" ]; then
     cp "${HGP1K_METADATA_SOURCE}" "${HGP1K_REF_CACHE}/20130606_g1k_3202_samples_ped_population.txt"
   fi
-  if [ "${subdir}" = "matrix" ] && [ "${matrix_source}" != "${DEFAULT_HGP1K_DEFAULT_MATRIX_SOURCE}" ]; then
+  if [ "${subdir}" = "matrix" ] && [ "${matrix_source}" != "${DEFAULT_HGP1K_DEFAULT_MATRIX_SOURCE}" ] && [ "${matrix_source}" != "${dest_dir}/hgp1k_dosage.npz" ]; then
     LOCAL_OVERRIDE_CLEANUP_PATHS+=("${dest_dir}")
     echo "Staged local HGP1K matrix override; will remove ${dest_dir} after build"
   fi
