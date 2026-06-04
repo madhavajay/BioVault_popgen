@@ -75,7 +75,7 @@ workflow USER {
 }
 
 process sex_biased_parse_batch {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.2.1-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.2.2-fast'
     stageInMode 'symlink'
     errorStrategy 'terminate'
     maxRetries { params.nextflow.max_retries }
@@ -139,7 +139,7 @@ process sex_biased_parse_batch {
 }
 
 process sex_biased_finalize {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.2.1-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.2.2-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy 'terminate'

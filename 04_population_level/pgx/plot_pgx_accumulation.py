@@ -45,11 +45,11 @@ def is_reference_like(value: str) -> bool:
 
 def load_participant_results(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path, sep="\t", dtype=str).fillna("")
-    required = {"participant_id", "country", "sex", "gene", "source_diplotype"}
+    required = {"participant_id", "country", "gene", "source_diplotype"}
     missing = sorted(required.difference(df.columns))
     if missing:
         raise SystemExit(f"{path} is missing columns: {', '.join(missing)}")
-    for col in ["country", "sex", "gene", "source_diplotype", "phenotype"]:
+    for col in ["country", "gene", "source_diplotype", "phenotype"]:
         df[col] = df[col].astype(str).str.strip()
     df = df[df["gene"] != ""].copy()
     df["is_non_reference_call"] = ~df["source_diplotype"].map(is_reference_like)
@@ -57,7 +57,7 @@ def load_participant_results(path: Path) -> pd.DataFrame:
     return df
 
 
-def make_gene_country_tables(df: pd.DataFrame, out_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+def make_gene_country_tables(df: pd.DataFrame, out_dir: Path) -> pd.DataFrame:
     grouped = (
         df.groupby(["country", "gene"], dropna=False)
         .agg(
@@ -69,19 +69,7 @@ def make_gene_country_tables(df: pd.DataFrame, out_dir: Path) -> tuple[pd.DataFr
     grouped = grouped[grouped["total_calls"] >= MIN_TOTAL_CALLS].copy()
     grouped["non_reference_rate"] = grouped["non_reference_calls"] / grouped["total_calls"]
     grouped.to_csv(out_dir / "pgx_gene_country_burden.tsv", sep="\t", index=False, float_format="%.6f")
-
-    by_sex = (
-        df.groupby(["country", "sex", "gene"], dropna=False)
-        .agg(
-            total_calls=("participant_id", "nunique"),
-            non_reference_calls=("is_non_reference_call", "sum"),
-        )
-        .reset_index()
-    )
-    by_sex = by_sex[by_sex["total_calls"] >= MIN_TOTAL_CALLS].copy()
-    by_sex["non_reference_rate"] = by_sex["non_reference_calls"] / by_sex["total_calls"]
-    by_sex.to_csv(out_dir / "pgx_gene_country_sex_burden.tsv", sep="\t", index=False, float_format="%.6f")
-    return grouped, by_sex
+    return grouped
 
 
 def plot_country_gene_heatmap(grouped: pd.DataFrame, out_dir: Path) -> None:
@@ -123,47 +111,6 @@ def plot_country_gene_heatmap(grouped: pd.DataFrame, out_dir: Path) -> None:
     plt.close(fig)
 
 
-def plot_country_sex_heatmap(by_sex: pd.DataFrame, out_dir: Path) -> None:
-    data = by_sex.copy()
-    data["country_sex"] = data["country"] + " | " + data["sex"]
-    matrix = data.pivot(index="gene", columns="country_sex", values="non_reference_rate").fillna(0.0)
-    counts = data.pivot(index="gene", columns="country_sex", values="non_reference_calls").fillna(0).astype(int)
-    if matrix.empty:
-        return
-
-    gene_order = counts.sum(axis=1).sort_values(ascending=False).index.tolist()
-    matrix = matrix.loc[gene_order]
-    counts = counts.loc[gene_order]
-
-    fig_h = max(5.5, len(matrix) * 0.34)
-    fig_w = max(8.5, len(matrix.columns) * 0.72)
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
-    sns.heatmap(
-        matrix,
-        ax=ax,
-        cmap="rocket_r",
-        vmin=0,
-        vmax=max(1.0, float(matrix.max().max())),
-        annot=counts,
-        fmt="d",
-        linewidths=0.35,
-        linecolor="#f2f2f2",
-        cbar_kws={"label": "Non-reference PGx call rate"},
-    )
-    ax.set_xlabel("")
-    ax.set_ylabel("Gene")
-    ax.set_title("PGx non-reference call accumulation by country and sex", fontsize=11, fontweight="bold")
-    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=7)
-    plt.setp(ax.get_yticklabels(), rotation=0, fontsize=8)
-    fig.tight_layout()
-    for suffix, kwargs in {
-        "png": {"dpi": FIG_DPI, "bbox_inches": "tight"},
-        "pdf": {"bbox_inches": "tight"},
-    }.items():
-        fig.savefig(out_dir / f"pgx_non_reference_country_sex_heatmap.{suffix}", **kwargs)
-    plt.close(fig)
-
-
 def plot_top_gene_bar(grouped: pd.DataFrame, out_dir: Path, top_n: int = 15) -> None:
     totals = (
         grouped.groupby("gene", as_index=False)["non_reference_calls"]
@@ -198,9 +145,8 @@ def main() -> None:
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     df = load_participant_results(args.participant_results)
-    grouped, by_sex = make_gene_country_tables(df, args.out_dir)
+    grouped = make_gene_country_tables(df, args.out_dir)
     plot_country_gene_heatmap(grouped, args.out_dir)
-    plot_country_sex_heatmap(by_sex, args.out_dir)
     plot_top_gene_bar(grouped, args.out_dir)
 
 

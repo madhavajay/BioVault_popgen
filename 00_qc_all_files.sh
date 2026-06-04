@@ -10,7 +10,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT_DIR="${OUT_DIR:-${ROOT_DIR}/results/qc_all_files}"
-IMAGE="${IMAGE:-ghcr.io/madhavajay/biovault-popgen:0.2.1-fast}"
+IMAGE="${IMAGE:-ghcr.io/madhavajay/biovault-popgen:0.2.2-fast}"
 USE_DOCKER=0
 
 ARGS=()
