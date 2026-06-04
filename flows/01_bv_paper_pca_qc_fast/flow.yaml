@@ -15,7 +15,9 @@ spec:
       publish:
         eigenvec: File(pca.eigenvec)
         eigenval: File(pca.eigenval)
+        pca_plot_points: File(pca_plot_points.tsv)
         snp_info: File(snp_info.tsv)
+        pca_prefiltered_snps: File(pca_prefiltered_snps.tsv)
         filtered_snps: File(filtered_snps.tsv)
         pca_pc12_plot: File(pca_pc1_pc2.png)
         pca_pc34_plot: File(pca_pc3_pc4.png)

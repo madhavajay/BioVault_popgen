@@ -37,12 +37,24 @@ spec:
       type: File
       description: Cohort PCA eigenvalues (variance explained per PC).
       path: pca.eigenval
+    - name: pca_plot_points
+      type: File
+      description: Per-sample PCA plot coordinates and per-PC variance percentages.
+      format:
+        kind: tsv
+      path: pca_plot_points.tsv
     - name: snp_info
       type: File
-      description: SNPs retained after QC, one per row.
+      description: Full cohort SNP universe before PCA QC, one per row.
       format:
         kind: tsv
       path: snp_info.tsv
+    - name: pca_prefiltered_snps
+      type: File
+      description: SNPs removed by the fixed PCA locus-map prefilter before QC.
+      format:
+        kind: tsv
+      path: pca_prefiltered_snps.tsv
     - name: filtered_snps
       type: File
       description: SNPs removed by call-rate, MAF, HWE, or PLINK QC filters.

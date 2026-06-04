@@ -64,7 +64,9 @@ workflow USER {
     emit:
         eigenvec = qc.eigenvec
         eigenval = qc.eigenval
+        pca_plot_points = qc.pca_plot_points
         snp_info = qc.snp_info
+        pca_prefiltered_snps = qc.pca_prefiltered_snps
         filtered_snps = qc.filtered_snps
         pca_pc12_plot = qc.pca_pc12_plot
         pca_pc34_plot = qc.pca_pc34_plot
@@ -120,7 +122,9 @@ process pca_qc_fast {
     output:
         path "pca.eigenvec",     emit: eigenvec
         path "pca.eigenval",     emit: eigenval
+        path "pca_plot_points.tsv", emit: pca_plot_points
         path "snp_info.tsv",     emit: snp_info
+        path "pca_prefiltered_snps.tsv", emit: pca_prefiltered_snps
         path "filtered_snps.tsv", emit: filtered_snps
         path "pca_pc1_pc2.png",  emit: pca_pc12_plot, optional: true
         path "pca_pc3_pc4.png",  emit: pca_pc34_plot, optional: true
@@ -187,7 +191,9 @@ process pca_qc_fast {
     # Hoist final artefacts to the process root so publishDir picks them up.
     cp pca_qc_fast/data/pca/pca.eigenvec       pca.eigenvec
     cp pca_qc_fast/data/pca/pca.eigenval       pca.eigenval
+    cp pca_qc_fast/data/pca/pca_plot_points.tsv pca_plot_points.tsv
     cp pca_qc_fast/data/merged/snp_info.tsv    snp_info.tsv
+    cp pca_qc_fast/data/qc/pca_prefiltered_snps.tsv pca_prefiltered_snps.tsv
     cp pca_qc_fast/data/qc/filtered_snps.tsv   filtered_snps.tsv
     [ -f pca_qc_fast/plots/pca_pc1_pc2.png ] && cp pca_qc_fast/plots/pca_pc1_pc2.png pca_pc1_pc2.png || true
     [ -f pca_qc_fast/plots/pca_pc3_pc4.png ] && cp pca_qc_fast/plots/pca_pc3_pc4.png pca_pc3_pc4.png || true

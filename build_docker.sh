@@ -57,12 +57,28 @@ CACHED_HT_TAR="${CACHE_DIR}/gnomad.v3.1.pca_loadings.ht.tar.gz"
 CACHED_TSV="${CACHE_DIR}/loadings_variants.tsv"
 AIMS_CACHE_DIR="${ROOT_DIR}/.docker/reference/aims"
 AIMS_AF_TSV="${AIMS_CACHE_DIR}/gnomad_af_per_locus.tsv"
+PCA_LOCUS_MAP_CACHE="${ROOT_DIR}/.docker/reference/pca_locus_map"
+DEFAULT_PCA_LOCUS_MAP_SOURCE="${ROOT_DIR}/tools/locus_map.tsv"
+PCA_LOCUS_MAP_SOURCE="${PCA_LOCUS_MAP_SOURCE:-${DEFAULT_PCA_LOCUS_MAP_SOURCE}}"
 HGDP_TGP_VCF_DIR="${HGDP_TGP_VCF_DIR:-${ROOT_DIR}/.docker/reference/hgdp_tgp_vcf}"
 HGDP_TGP_PANEL="${ROOT_DIR}/03_individual_level/gnomad_projection/reference/panel_hgdp_tgp.tsv"
 HGP1K_REF_CACHE="${ROOT_DIR}/.docker/reference/hgp1k"
 HGP1K_METADATA_SOURCE="${HGP1K_METADATA_SOURCE:-${ROOT_DIR}/data/1kgp_high_coverage/20130606_g1k_3202_samples_ped_population.txt}"
-HGP1K_DEFAULT_MATRIX_SOURCE="${HGP1K_DEFAULT_MATRIX_SOURCE:-${ROOT_DIR}/data/1kgp_high_coverage/matrix/hgp1k_dosage.npz}"
+DEFAULT_HGP1K_DEFAULT_MATRIX_SOURCE="${ROOT_DIR}/data/1kgp_high_coverage/matrix/hgp1k_dosage.npz"
+HGP1K_DEFAULT_MATRIX_SOURCE="${HGP1K_DEFAULT_MATRIX_SOURCE:-${DEFAULT_HGP1K_DEFAULT_MATRIX_SOURCE}}"
 HGP1K_PGP_MATRIX_SOURCE="${HGP1K_PGP_MATRIX_SOURCE:-${ROOT_DIR}/data/1kgp_high_coverage/matrix_pgp/hgp1k_dosage.npz}"
+LOCAL_OVERRIDE_CLEANUP_PATHS=()
+
+cleanup_local_overrides() {
+  local path
+  for path in "${LOCAL_OVERRIDE_CLEANUP_PATHS[@]:-}"; do
+    if [ -n "${path}" ] && [ -e "${path}" ]; then
+      rm -rf "${path}"
+      echo "Cleaned local override staging: ${path}"
+    fi
+  done
+}
+trap cleanup_local_overrides EXIT
 
 write_hgp1k_sidecars_from_npz() {
   local dest_dir="$1"
@@ -99,7 +115,25 @@ prepare_hgp1k_reference() {
   if [ "${HGP1K_METADATA_SOURCE}" != "${HGP1K_REF_CACHE}/20130606_g1k_3202_samples_ped_population.txt" ]; then
     cp "${HGP1K_METADATA_SOURCE}" "${HGP1K_REF_CACHE}/20130606_g1k_3202_samples_ped_population.txt"
   fi
+  if [ "${subdir}" = "matrix" ] && [ "${matrix_source}" != "${DEFAULT_HGP1K_DEFAULT_MATRIX_SOURCE}" ]; then
+    LOCAL_OVERRIDE_CLEANUP_PATHS+=("${dest_dir}")
+    echo "Staged local HGP1K matrix override; will remove ${dest_dir} after build"
+  fi
   echo "Prepared HGP1K reference ${subdir}: ${dest_dir}/hgp1k_dosage.npz"
+}
+
+prepare_pca_locus_map() {
+  local dest="${PCA_LOCUS_MAP_CACHE}/locus_map.tsv"
+  [ -s "${PCA_LOCUS_MAP_SOURCE}" ] || { echo "ERROR: missing PCA locus map ${PCA_LOCUS_MAP_SOURCE}" >&2; exit 1; }
+  mkdir -p "${PCA_LOCUS_MAP_CACHE}"
+  if [ "${PCA_LOCUS_MAP_SOURCE}" != "${dest}" ]; then
+    cp "${PCA_LOCUS_MAP_SOURCE}" "${dest}"
+  fi
+  if [ "${PCA_LOCUS_MAP_SOURCE}" != "${DEFAULT_PCA_LOCUS_MAP_SOURCE}" ]; then
+    LOCAL_OVERRIDE_CLEANUP_PATHS+=("${PCA_LOCUS_MAP_CACHE}")
+    echo "Staged local PCA locus-map override; will remove ${PCA_LOCUS_MAP_CACHE} after build"
+  fi
+  echo "Prepared PCA locus map: ${dest}"
 }
 
 NEEDS_TOOLS=0
@@ -211,6 +245,7 @@ else
 fi
 
 if [ "${BUILD_RUNTIME}" = "1" ]; then
+  prepare_pca_locus_map
   prepare_hgp1k_reference matrix "${HGP1K_DEFAULT_MATRIX_SOURCE}"
   docker build \
     --platform "${PLATFORM}" \
@@ -223,6 +258,7 @@ if [ "${BUILD_RUNTIME}" = "1" ]; then
 fi
 
 if [ "${BUILD_FAST}" = "1" ]; then
+  prepare_pca_locus_map
   prepare_hgp1k_reference matrix "${HGP1K_DEFAULT_MATRIX_SOURCE}"
   docker build \
     --platform "${PLATFORM}" \
@@ -235,6 +271,7 @@ if [ "${BUILD_FAST}" = "1" ]; then
 fi
 
 if [ "${BUILD_FAST_PGP}" = "1" ]; then
+  prepare_pca_locus_map
   prepare_hgp1k_reference matrix_pgp "${HGP1K_PGP_MATRIX_SOURCE}"
   docker build \
     --platform "${PLATFORM}" \

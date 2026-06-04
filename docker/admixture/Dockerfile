@@ -24,6 +24,8 @@ RUN mkdir -p /opt/admixture && \
     rm -f /tmp/admixture.tar.gz && \
     (admixture 2>&1 || true) | grep -q "ADMIXTURE Version ${ADMIXTURE_VERSION}"
 
+COPY 03_individual_level/sex_biased_admixture_find_k/scripts /opt/biovault/scripts/sex_biased_admixture_find_k
+
 ENV PATH=/opt/conda/bin:${PATH}
 
 ENTRYPOINT ["/usr/local/bin/admixture"]

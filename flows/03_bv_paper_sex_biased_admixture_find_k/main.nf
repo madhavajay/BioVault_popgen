@@ -10,7 +10,7 @@ if (!params.containsKey('biosynth_image')) {
 }
 
 def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: (params.biosynth_image ?: 'ghcr.io/openmined/biosynth:0.1.31')
-def FIND_K_IMAGE = params.find_k_image ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.1-fast'
+def FIND_K_IMAGE = params.find_k_image ?: 'ghcr.io/madhavajay/biovault-admixture:1.4.0-amd64'
 
 def ancestryValue(record) {
     def facets = record.facets ?: [:]
@@ -73,11 +73,23 @@ workflow USER {
         ancestry_anchor_samples = result.ancestry_anchor_samples
         reported_ancestry_normalized = result.reported_ancestry_normalized
         find_k_report = result.find_k_report
+        plink_bed = bed.bed_dir
+        plink_files = bed.plink_files
+        plink_bed_archive = bed.bed_archive
+        admixture_raw = result.admixture_raw
+        admixture_logs = result.admixture_logs
+        admixture_q_files = result.admixture_q_files
+        admixture_p_files = result.admixture_p_files
+        admixture_labeled_q_files = result.admixture_labeled_q_files
+        admixture_log_files = result.admixture_log_files
+        admixture_raw_archive = result.admixture_raw_archive
+        admixture_logs_archive = result.admixture_logs_archive
 }
 
 process cohort_bed_reported_ancestry {
     container BIOSYNTH_IMAGE
     containerOptions '--entrypoint=""'
+    publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy { params.nextflow.error_strategy }
     maxRetries { params.nextflow.max_retries }
@@ -87,6 +99,8 @@ process cohort_bed_reported_ancestry {
 
     output:
         path "plink_bed", emit: bed_dir
+        path "plink_bed/genotypes.*", emit: plink_files
+        path "plink_bed.tar.gz", emit: bed_archive
         path "reported_ancestry.tsv", emit: ancestry_map
 
     script:
@@ -107,11 +121,13 @@ process cohort_bed_reported_ancestry {
     bvs cohort-bed -i input \\
         --out-prefix plink_bed/genotypes \\
         --snp-info plink_bed/snp_info.tsv
+    tar -czf plink_bed.tar.gz plink_bed
     """
 }
 
 process admixture_find_k {
     container FIND_K_IMAGE
+    containerOptions '--platform=linux/amd64 --entrypoint=""'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy 'terminate'
@@ -131,9 +147,14 @@ process admixture_find_k {
         path "ancestry_anchor_samples.tsv", emit: ancestry_anchor_samples
         path "reported_ancestry_normalized.tsv", emit: reported_ancestry_normalized
         path "find_k_report.txt", emit: find_k_report
-        path "admixture_K*.Q", optional: true
-        path "admixture_K*.P", optional: true
-        path "admixture_K*_labeled_Q.tsv", optional: true
+        path "admixture_K*.Q", emit: admixture_q_files, optional: true
+        path "admixture_K*.P", emit: admixture_p_files, optional: true
+        path "admixture_K*_labeled_Q.tsv", emit: admixture_labeled_q_files, optional: true
+        path "admixture_K*.log", emit: admixture_log_files, optional: true
+        path "admixture_raw", emit: admixture_raw, optional: true
+        path "admixture_logs", emit: admixture_logs, optional: true
+        path "admixture_raw.tar.gz", emit: admixture_raw_archive, optional: true
+        path "admixture_logs.tar.gz", emit: admixture_logs_archive, optional: true
 
     script:
     """
@@ -151,9 +172,6 @@ process admixture_find_k {
     mkdir -p sex_biased_admixture_find_k/scripts
     cp /opt/biovault/scripts/sex_biased_admixture_find_k/*.py sex_biased_admixture_find_k/scripts/
 
-    source /opt/conda/etc/profile.d/conda.sh
-    conda activate biovault_popgen
-
     python3 sex_biased_admixture_find_k/scripts/find_k.py \\
         --bed-prefix "${bed_dir}/genotypes" \\
         --ancestry-map "${ancestry_map}" \\
@@ -162,5 +180,13 @@ process admixture_find_k {
         --k-max "\${BV_ADMIXTURE_K_MAX:-8}" \\
         --reps "\${BV_ADMIXTURE_REPS:-1}" \\
         --threads "\${BV_THREADS:-8}"
+
+    mkdir -p admixture_raw admixture_logs
+    cp -f admixture_K*.Q admixture_raw/ 2>/dev/null || true
+    cp -f admixture_K*.P admixture_raw/ 2>/dev/null || true
+    cp -f admixture_K*_labeled_Q.tsv admixture_raw/ 2>/dev/null || true
+    cp -f admixture_K*.log admixture_logs/ 2>/dev/null || true
+    tar -czf admixture_raw.tar.gz admixture_raw
+    tar -czf admixture_logs.tar.gz admixture_logs
     """
 }

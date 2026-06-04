@@ -59,7 +59,12 @@ WORK_DIR = BASE_DIR / "data" / "work"
 ERRORS_TSV = LOG_DIR / "errors.tsv"
 WARNINGS_TSV = LOG_DIR / "warnings.tsv"
 FILTERED_SNPS_TSV = QC_DIR / "filtered_snps.tsv"
+PCA_PREFILTERED_SNPS_TSV = QC_DIR / "pca_prefiltered_snps.tsv"
+PCA_PLOT_POINTS_TSV = PCA_DIR / "pca_plot_points.tsv"
 
+DEFAULT_PCA_LOCUS_MAP = Path("/opt/biovault/tools/locus_map.tsv")
+PCA_LOCUS_MAP = Path(os.environ.get("BV_PCA_LOCUS_MAP", DEFAULT_PCA_LOCUS_MAP))
+USE_PCA_LOCUS_MAP = os.environ.get("BV_USE_PCA_LOCUS_MAP", "1").lower() not in {"0", "false", "no"}
 N_PCS = int(os.environ.get("BV_N_PCS", "20"))
 GENO = float(os.environ.get("BV_GENO", "0.05"))
 MIND = float(os.environ.get("BV_MIND", "0.10"))
@@ -152,6 +157,7 @@ def write_empty_pca_outputs(reason: str) -> None:
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
     (PCA_DIR / "pca.eigenvec").write_text("", encoding="utf-8")
     (PCA_DIR / "pca.eigenval").write_text("", encoding="utf-8")
+    pd.DataFrame(columns=["point_index", "sample_id", "FID", "IID"]).to_csv(PCA_PLOT_POINTS_TSV, sep="\t", index=False)
     append_error("COHORT", str(DATA_DIR), "INSUFFICIENT_USABLE_DATA", reason)
     log.error(reason)
 
@@ -171,6 +177,26 @@ def write_filtered_snps(df: pd.DataFrame | None = None) -> None:
         if col not in df.columns:
             df[col] = ""
     df[FILTERED_SNPS_COLUMNS].to_csv(FILTERED_SNPS_TSV, sep="\t", index=False)
+
+
+def write_pca_prefiltered_snps(info: pd.DataFrame, keep: pd.Series, reasons: dict[str, pd.Series]) -> None:
+    QC_DIR.mkdir(parents=True, exist_ok=True)
+    dropped = info.loc[~keep, ["rsid", "chromosome", "position", "a1", "a2"]].copy()
+    if dropped.empty:
+        pd.DataFrame(columns=["variant_index", "rsid", "chromosome", "position", "a1", "a2", "filter"]).to_csv(
+            PCA_PREFILTERED_SNPS_TSV,
+            sep="\t",
+            index=False,
+        )
+        return
+
+    dropped.insert(0, "variant_index", dropped.index.astype(np.int64))
+    reason_values: list[str] = []
+    for idx in dropped.index:
+        parts = [name for name, mask in reasons.items() if bool(mask.loc[idx])]
+        reason_values.append(";".join(parts) if parts else "prefilter")
+    dropped["filter"] = reason_values
+    dropped.to_csv(PCA_PREFILTERED_SNPS_TSV, sep="\t", index=False)
 
 
 def discover_samples() -> list[tuple[str, Path]]:
@@ -549,6 +575,94 @@ def read_bim_snp_info(prefix: Path) -> pd.DataFrame:
     return df[["rsid", "chromosome", "position"]].copy()
 
 
+def load_pca_locus_map(path: Path) -> tuple[set[str], set[tuple[str, int]]]:
+    if not USE_PCA_LOCUS_MAP:
+        return set(), set()
+    if not path.exists() or path.stat().st_size == 0:
+        log.warning("PCA locus map not found; using full cohort BED: %s", path)
+        return set(), set()
+    df = pd.read_csv(path, sep="\t", dtype={"chrom": str, "pos": "Int64", "rsid": str})
+    expected = {"chrom", "pos", "rsid"}
+    if not expected.issubset(df.columns):
+        raise ValueError(f"{path}: expected columns {sorted(expected)}, got {list(df.columns)}")
+    df = df.dropna(subset=["chrom", "pos", "rsid"]).copy()
+    df["chrom"] = df["chrom"].astype(str).str.replace("^chr", "", regex=True)
+    df["rsid"] = df["rsid"].astype(str)
+    rsids = set(df["rsid"])
+    loci = {(str(chrom), int(pos)) for chrom, pos in df[["chrom", "pos"]].itertuples(index=False, name=None)}
+    log.info("Loaded PCA locus map: %d rsids / %d loci from %s", len(rsids), len(loci), path)
+    return rsids, loci
+
+
+def subset_plink_bed_for_pca(input_prefix: Path, output_prefix: Path) -> None:
+    bim = input_prefix.with_suffix(".bim")
+    fam = input_prefix.with_suffix(".fam")
+    bed = input_prefix.with_suffix(".bed")
+    if not (bim.exists() and fam.exists() and bed.exists()):
+        raise FileNotFoundError(f"Missing PLINK files for {input_prefix}.{{bed,bim,fam}}")
+
+    info = pd.read_csv(
+        bim,
+        sep=r"\s+",
+        header=None,
+        names=["chromosome", "rsid", "cm", "position", "a1", "a2"],
+        dtype={"chromosome": str, "rsid": str, "a1": str, "a2": str},
+    )
+    n_before = len(info)
+    rsids, loci = load_pca_locus_map(PCA_LOCUS_MAP)
+    valid_alleles = info["a1"].isin(BASE_LABELS[1:]) & info["a2"].isin(BASE_LABELS[1:])
+    non_mono = info["a1"] != info["a2"]
+    keep = valid_alleles & non_mono
+    if USE_PCA_LOCUS_MAP and (rsids or loci):
+        chrom = info["chromosome"].astype(str).str.replace("^chr", "", regex=True)
+        locus_keep = pd.Series(
+            [(c, int(p)) in loci for c, p in zip(chrom, info["position"])],
+            index=info.index,
+        )
+        in_locus_map = info["rsid"].isin(rsids) | locus_keep
+    else:
+        in_locus_map = pd.Series(True, index=info.index)
+    duplicate_rsid = info["rsid"].duplicated(keep="first")
+    keep &= in_locus_map
+    keep &= ~duplicate_rsid
+    write_pca_prefiltered_snps(
+        info,
+        keep,
+        {
+            "invalid_allele": ~valid_alleles,
+            "monomorphic": valid_alleles & ~non_mono,
+            "outside_locus_map": ~in_locus_map,
+            "duplicate_rsid": duplicate_rsid,
+        },
+    )
+    keep_idx = np.flatnonzero(keep.to_numpy())
+    if keep_idx.size == 0:
+        raise RuntimeError("PCA prefilter removed all variants; no variants overlap the configured locus map")
+
+    sample_count = sum(1 for line in fam.read_text(encoding="utf-8").splitlines() if line.strip())
+    bytes_per_var = (sample_count + 3) // 4
+    raw = np.fromfile(bed, dtype=np.uint8)
+    if raw.size < 3 or raw[0] != 0x6C or raw[1] != 0x1B or raw[2] != 0x01:
+        raise ValueError(f"{bed} is not a valid variant-major PLINK bed")
+    body = raw[3:].reshape(n_before, bytes_per_var)
+
+    output_prefix.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(str(fam), str(output_prefix.with_suffix(".fam")))
+    info.loc[keep].to_csv(output_prefix.with_suffix(".bim"), sep="\t", header=False, index=False)
+    with output_prefix.with_suffix(".bed").open("wb") as handle:
+        handle.write(raw[:3].tobytes())
+        handle.write(body[keep_idx].tobytes())
+
+    MERGED_DIR.mkdir(parents=True, exist_ok=True)
+    read_bim_snp_info(output_prefix).to_csv(MERGED_DIR / "snp_info.tsv", sep="\t", index=False)
+    log.info(
+        "PCA prefilter retained %d/%d variants (locus_map=%s, dropped mono/invalid/duplicates/outside-map)",
+        keep_idx.size,
+        n_before,
+        PCA_LOCUS_MAP if USE_PCA_LOCUS_MAP else "disabled",
+    )
+
+
 def write_plink_filtered_snps(input_prefix: Path, qc_prefix: Path) -> None:
     input_info = read_bim_snp_info(input_prefix)
     if input_info.empty:
@@ -831,6 +945,18 @@ def load_eigenval() -> list[float]:
     return [v / total * 100 for v in vals] if total > 0 else vals
 
 
+def write_pca_plot_points(df: pd.DataFrame, var_exp: list[float]) -> None:
+    pc_cols = [
+        f"PC{i}"
+        for i in range(1, 11)
+        if f"PC{i}" in df.columns
+    ]
+    out = df[["sample_id", "FID", "IID", *pc_cols]].copy()
+    out.insert(0, "point_index", np.arange(len(out), dtype=np.int64))
+    out.to_csv(PCA_PLOT_POINTS_TSV, sep="\t", index=False)
+    log.info("Saved PCA plot points -> %s", PCA_PLOT_POINTS_TSV.name)
+
+
 def scatter_pca(df: pd.DataFrame, pc_x: str, pc_y: str, var_exp: list[float], out_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(8, 6))
     palette = plt.get_cmap("tab10", max(len(df), 1))
@@ -863,10 +989,12 @@ def plot_pca() -> None:
         return
     with timed("Plotting PCA"):
         df = load_eigenvec()
+        var_exp = load_eigenval() if (PCA_DIR / "pca.eigenval").exists() else []
+        if not df.empty:
+            write_pca_plot_points(df, var_exp)
         if df.empty or "PC2" not in df.columns:
             log.warning("PCA plot skipped: fewer than two PCs were produced")
             return
-        var_exp = load_eigenval() if (PCA_DIR / "pca.eigenval").exists() else []
         scatter_pca(df, "PC1", "PC2", var_exp, PLOTS_DIR / "pca_pc1_pc2.png")
         if "PC4" in df.columns:
             scatter_pca(df, "PC3", "PC4", var_exp, PLOTS_DIR / "pca_pc3_pc4.png")
@@ -911,9 +1039,11 @@ def run_from_prebuilt_bed(prefix: Path) -> None:
     byte-identical to the full pipeline because they run on the identical bed."""
     log.info("Using prebuilt PLINK bed: %s.{bed,bim,fam}", prefix)
     PLINK_DIR.mkdir(parents=True, exist_ok=True)
+    raw = PLINK_DIR / "genotypes_raw"
     dest = PLINK_DIR / "genotypes"
     for ext in ("bed", "bim", "fam"):
-        shutil.copy(str(prefix.with_suffix(f".{ext}")), str(dest.with_suffix(f".{ext}")))
+        shutil.copy(str(prefix.with_suffix(f".{ext}")), str(raw.with_suffix(f".{ext}")))
+    subset_plink_bed_for_pca(raw, dest)
     if not run_plink_backend_if_requested():
         dosage, sample_ids = read_bed_to_dosage(dest)
         snp_info = read_bim_snp_info(dest)

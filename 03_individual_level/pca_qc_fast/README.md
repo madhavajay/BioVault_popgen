@@ -8,6 +8,7 @@ matrices by default:
 
 ```text
 data/merged/snp_info.tsv
+data/qc/pca_prefiltered_snps.tsv
 data/qc/filtered_snps.tsv
 data/plink/genotypes.bed
 data/plink/genotypes.bim
@@ -15,6 +16,7 @@ data/plink/genotypes.fam
 data/plink/genotypes.map
 data/pca/pca.eigenvec
 data/pca/pca.eigenval
+data/pca/pca_plot_points.tsv
 plots/pca_pc1_pc2.png
 plots/pca_pc3_pc4.png
 logs/fast_pipeline.log

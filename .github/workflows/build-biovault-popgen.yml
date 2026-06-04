@@ -29,6 +29,7 @@ on:
       - environment.yml
       - environment.fast.yml
       - build_docker.sh
+      - "tools/locus_map.tsv"
       - "data/hgp1k_dosage_split/**"
       - ".docker/reference/pca_loadings/**"
       - ".docker/reference/aims/**"
@@ -150,6 +151,11 @@ jobs:
             echo "::error::Refusing public build; remove .docker/reference/hgp1k/matrix_pgp from the cache"
             missing=1
           fi
+          if [ -e .docker/reference/pca_locus_map/locus_map.tsv ] && ! cmp -s tools/locus_map.tsv .docker/reference/pca_locus_map/locus_map.tsv; then
+            echo "::error::Cached PCA locus map differs from production tools/locus_map.tsv"
+            echo "::error::Refusing public build with a local/custom PCA locus map"
+            missing=1
+          fi
           if [ "$missing" -ne 0 ]; then
             echo "::error::Reference cache absent. CI will NOT regenerate it"
             echo "::error::(needs gsutil + Hail + ~260 GB VCFs). Prime the"
@@ -190,6 +196,7 @@ jobs:
           BUILD_FAST: "0"
           BUILD_FAST_PGP: "0"
           TAG_PGP_AS_FAST: "0"
+          PCA_LOCUS_MAP_SOURCE: ${{ github.workspace }}/tools/locus_map.tsv
           HGP1K_DEFAULT_MATRIX_SOURCE: ${{ github.workspace }}/.docker/reference/hgp1k/matrix/hgp1k_dosage.npz
           HGP1K_METADATA_SOURCE: ${{ github.workspace }}/.docker/reference/hgp1k/20130606_g1k_3202_samples_ped_population.txt
           # Belt & braces: this stays 0 so build_docker.sh's cache-skip

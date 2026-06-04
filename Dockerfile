@@ -61,6 +61,7 @@ COPY .docker/reference/aims/gnomad_af_per_locus.tsv /opt/biovault/reference/aims
 COPY .docker/reference/hgp1k/${HGP1K_REFERENCE_SUBDIR}/ /opt/biovault/reference/hgp1k/
 COPY .docker/reference/hgp1k/20130606_g1k_3202_samples_ped_population.txt ${HGP1K_METADATA_TSV}
 COPY tools /opt/biovault/tools
+COPY .docker/reference/pca_locus_map/locus_map.tsv /opt/biovault/tools/locus_map.tsv
 COPY 00_qc_all_files/scripts /opt/biovault/scripts/qc_all_files
 COPY 03_individual_level/gnomad_projection/scripts /opt/biovault/scripts/gnomad_projection
 COPY 03_individual_level/gnomad_projection_fast/scripts /opt/biovault/scripts/gnomad_projection_fast
@@ -136,6 +137,7 @@ COPY .docker/reference/aims/gnomad_af_per_locus.tsv /opt/biovault/reference/aims
 COPY .docker/reference/hgp1k/${HGP1K_REFERENCE_SUBDIR}/ /opt/biovault/reference/hgp1k/
 COPY .docker/reference/hgp1k/20130606_g1k_3202_samples_ped_population.txt ${HGP1K_METADATA_TSV}
 COPY tools /opt/biovault/tools
+COPY .docker/reference/pca_locus_map/locus_map.tsv /opt/biovault/tools/locus_map.tsv
 COPY 00_qc_all_files/scripts /opt/biovault/scripts/qc_all_files
 COPY 03_individual_level/gnomad_projection_fast/scripts /opt/biovault/scripts/gnomad_projection_fast
 COPY 03_individual_level/hgp1k_projection_fast/scripts /opt/biovault/scripts/hgp1k_projection_fast
