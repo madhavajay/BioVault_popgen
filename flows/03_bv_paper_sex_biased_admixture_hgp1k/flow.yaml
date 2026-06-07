@@ -1,0 +1,31 @@
+apiVersion: syftbox.openmined.org/v1alpha1
+kind: Flow
+metadata:
+  name: 03_bv_paper_sex_biased_admixture_hgp1k
+  version: 0.2.4
+spec:
+  inputs:
+    samplesheet:
+      type: List[GenotypeRecord]
+      description: Genotype samplesheet with a participant `sex` facet column.
+      required_facets:
+        - sex
+  steps:
+    - id: sex_biased_admixture_hgp1k
+      uses: ./
+      with:
+        participants: inputs.samplesheet
+      publish:
+        sex_bias_x_vs_auto: File(sex_bias_x_vs_auto.tsv)
+        sex_bias_plot: File(sex_bias_x_vs_auto.png)
+        sex_bias_plot_pdf: File(sex_bias_x_vs_auto.pdf)
+        sex_bias_per_sample: File(sex_bias_per_sample_K*.tsv)
+        figures: File(figure_sex_biased_admixture_K*.png)
+        figures_pdf: File(figure_sex_biased_admixture_K*.pdf)
+        component_labels: File(component_labels.tsv)
+        qc_report: File(qc_report.txt)
+        labeled_q_files: File(admixture_*_labeled_Q.tsv)
+        admixture_q_files: File(admixture_*.Q)
+        admixture_p_files: File(admixture_*.P)
+        admixture_logs: File(admixture_*.log)
+        plink_bed_archive: File(plink_bed.tar.gz)

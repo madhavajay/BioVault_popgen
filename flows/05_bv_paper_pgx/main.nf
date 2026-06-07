@@ -17,7 +17,7 @@ nextflow.enable.dsl=2
 
 def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.32'
 def PHARMCAT_IMAGE = 'ghcr.io/madhavajay/pharmcat:cyp2d6-enabled'
-def POPGEN_IMAGE = System.getenv('POPGEN_IMAGE') ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.3-fast'
+def POPGEN_IMAGE = System.getenv('POPGEN_IMAGE') ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.4-fast'
 
 def normalizeFacet(String raw) {
     return (raw ?: '').trim()
@@ -56,11 +56,19 @@ workflow USER {
             .ifEmpty {
                 throw new IllegalArgumentException("No valid participants with readable genotype files and country facets remained")
             }
+        // Full expected roster — aggregate_pgx diffs this against the
+        // participants that actually produced a report to mark down any that
+        // were dropped/killed before writing a status.
+        def expected_manifest = checked
+            .map { pid, country, gf -> "${pid}\t${country}" }
+            .collectFile(name: 'expected_participants.tsv', newLine: true,
+                         seed: "participant_id\tcountry")
         def vcfs = prepare_vcf(checked)
         def reports = pharmcat_pipeline(vcfs.vcf)
         def aggregate = aggregate_pgx(
-            reports.report_dir.collect(flat: false),
-            vcfs.vcf_file.collect(flat: false)
+            reports.report_dir.collect(flat: false).ifEmpty([]),
+            vcfs.vcf_file.collect(flat: false).ifEmpty([]),
+            expected_manifest
         )
 
     emit:
@@ -70,6 +78,7 @@ workflow USER {
         country_gene_genotype_counts = aggregate.country_gene_genotype_counts
         country_gene_genotype_counts_normalized = aggregate.country_gene_genotype_counts_normalized
         country_summary = aggregate.country_summary
+        failures = aggregate.failures
         errors = aggregate.errors
         warnings = aggregate.warnings
         pipeline_log = aggregate.pipeline_log
@@ -80,7 +89,10 @@ process prepare_vcf {
     containerOptions '--entrypoint=""'
     stageInMode 'symlink'
     tag { participant_id }
-    errorStrategy { params.nextflow.error_strategy }
+    // Fail-soft: a single unconvertible file must not abort the cohort. A
+    // dropped participant produces no VCF -> no report -> aggregate_pgx marks
+    // it down via the expected-vs-reported diff.
+    errorStrategy 'ignore'
     maxRetries { params.nextflow.max_retries }
 
     input:
@@ -121,7 +133,13 @@ process pharmcat_pipeline {
     container PHARMCAT_IMAGE
     stageInMode 'symlink'
     tag { participant_id }
-    errorStrategy 'terminate'
+    // Fail-soft: one bad file (e.g. a PharmCAT OOM / combinatorial blow-up in
+    // the matcher) must not kill the cohort. The script catches the failure,
+    // records a status row, and always exits 0 so the report dir is emitted
+    // and aggregate_pgx can mark the participant down. 'ignore' is a backstop
+    // for an uncatchable container kill (the expected-vs-reported diff then
+    // catches it).
+    errorStrategy 'ignore'
     maxRetries { params.nextflow.max_retries }
 
     input:
@@ -133,31 +151,51 @@ process pharmcat_pipeline {
     script:
     prefix = safeId(participant_id)
     """
-    set -euo pipefail
+    set -uo pipefail
     out="pharmcat_${prefix}"
     mkdir -p "\${out}"
-    prepared="${prefix}.canonical.sorted.vcf.bgz"
-    case ${shellQuote(vcf_file.getName())} in
-        *.gz|*.bgz)
-            gzip -dc ${shellQuote(vcf_file.getName())}
-            ;;
-        *)
-            cat ${shellQuote(vcf_file.getName())}
-            ;;
-    esac \\
-        | awk 'BEGIN{OFS="\\t"; has_conflict_info=0} /^##INFO=<ID=CONFLICT,/ {has_conflict_info=1; print; next} /^#CHROM/ {if (!has_conflict_info) print "##INFO=<ID=CONFLICT,Number=0,Type=Flag,Description=\\"Conflicting variant/ref-alt mapping\\">"; print; next} /^#/ {print; next} \$1 ~ /^(1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|X|Y|MT|M|chr1|chr2|chr3|chr4|chr5|chr6|chr7|chr8|chr9|chr10|chr11|chr12|chr13|chr14|chr15|chr16|chr17|chr18|chr19|chr20|chr21|chr22|chrX|chrY|chrM|chrMT)\$/ {print}' \\
-        > "${prefix}.canonical.vcf"
-    bcftools sort "${prefix}.canonical.vcf" -Oz -o "\${prepared}"
+    # Write metadata up-front so even a failed sample stays attributable.
+    { printf 'participant_id\\tcountry\\tprefix\\n'; \\
+      printf '%s\\t%s\\t%s\\n' ${shellQuote(participant_id)} ${shellQuote(country)} ${shellQuote(prefix)}; } \\
+      > "\${out}/metadata.tsv"
 
-    pharmcat_pipeline "\${prepared}" \\
-        -o "\${out}" \\
-        -bf ${shellQuote(prefix)} \\
-        -matcherHtml \\
-        -reporterHtml \\
-        -reporterJson \\
-        -reporterCallsOnlyTsv
-    printf 'participant_id\\tcountry\\tprefix\\n' > "\${out}/metadata.tsv"
-    printf '%s\\t%s\\t%s\\n' ${shellQuote(participant_id)} ${shellQuote(country)} ${shellQuote(prefix)} >> "\${out}/metadata.tsv"
+    prepared="${prefix}.canonical.sorted.vcf.bgz"
+    run_log="\${out}/run.log"
+    status=ok
+    reason=""
+    # Guarded subshell: prep + PharmCAT. pipefail is inherited so a broken pipe
+    # also trips set -e and is caught below.
+    (
+        set -e
+        case ${shellQuote(vcf_file.getName())} in
+            *.gz|*.bgz)
+                gzip -dc ${shellQuote(vcf_file.getName())}
+                ;;
+            *)
+                cat ${shellQuote(vcf_file.getName())}
+                ;;
+        esac \\
+            | awk 'BEGIN{OFS="\\t"; has_conflict_info=0} /^##INFO=<ID=CONFLICT,/ {has_conflict_info=1; print; next} /^#CHROM/ {if (!has_conflict_info) print "##INFO=<ID=CONFLICT,Number=0,Type=Flag,Description=\\"Conflicting variant/ref-alt mapping\\">"; print; next} /^#/ {print; next} \$1 ~ /^(1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|X|Y|MT|M|chr1|chr2|chr3|chr4|chr5|chr6|chr7|chr8|chr9|chr10|chr11|chr12|chr13|chr14|chr15|chr16|chr17|chr18|chr19|chr20|chr21|chr22|chrX|chrY|chrM|chrMT)\$/ {print}' \\
+            > "${prefix}.canonical.vcf"
+        bcftools sort "${prefix}.canonical.vcf" -Oz -o "\${prepared}"
+        pharmcat_pipeline "\${prepared}" \\
+            -o "\${out}" \\
+            -bf ${shellQuote(prefix)} \\
+            -matcherHtml \\
+            -reporterHtml \\
+            -reporterJson \\
+            -reporterCallsOnlyTsv
+    ) > "\${run_log}" 2>&1
+    rc=\$?
+    if [ "\${rc}" -ne 0 ]; then
+        status=failed
+        reason="\$(tail -n 5 "\${run_log}" 2>/dev/null | tr '\\t\\n' '  ' | sed 's/  */ /g' | cut -c1-300)"
+        echo "[bv] WARNING: pharmcat_pipeline failed for ${shellQuote(participant_id)} (rc=\${rc}): \${reason}" >&2
+    fi
+    { printf 'participant_id\\tstatus\\treason\\n'; \\
+      printf '%s\\t%s\\t%s\\n' ${shellQuote(participant_id)} "\${status}" "\${reason}"; } \\
+      > "\${out}/status.tsv"
+    exit 0
     """
 }
 
@@ -171,6 +209,7 @@ process aggregate_pgx {
     input:
         path report_dirs
         path vcf_files
+        path expected_manifest
 
     output:
         path "pgx_participant_results.tsv", emit: participant_results
@@ -179,6 +218,7 @@ process aggregate_pgx {
         path "pgx_country_gene_genotype_counts.tsv", emit: country_gene_genotype_counts
         path "pgx_country_gene_genotype_counts_normalized.tsv", emit: country_gene_genotype_counts_normalized
         path "pgx_country_summary.tsv", emit: country_summary
+        path "pgx_failures.tsv", emit: failures
         path "errors.tsv", emit: errors
         path "warnings.tsv", emit: warnings
         path "pgx_pipeline.log", emit: pipeline_log
@@ -368,6 +408,8 @@ burden_country_gene_nonref = Counter()
 country_samples = defaultdict(set)
 errors = []
 warnings = []
+failures = []
+reported_pids = set()
 
 for report_dir in sorted(Path(".").glob("pharmcat_*")):
     if not report_dir.is_dir():
@@ -381,6 +423,25 @@ for report_dir in sorted(Path(".").glob("pharmcat_*")):
     pid = clean(meta.get("participant_id"))
     country = clean(meta.get("country"))
     prefix = clean(meta.get("prefix")) or pid
+    if pid:
+        reported_pids.add(pid)
+
+    # Per-sample fail-soft status written by pharmcat_pipeline.
+    sample_status, sample_reason = "ok", ""
+    status_path = report_dir / "status.tsv"
+    if status_path.exists():
+        with open(status_path, newline="") as handle:
+            srow = next(csv.DictReader(handle, delimiter="\\t"), {}) or {}
+        sample_status = clean(srow.get("status")) or "ok"
+        sample_reason = clean(srow.get("reason"))
+    if sample_status != "ok":
+        failures.append({"participant_id": pid, "country": country,
+                         "status": sample_status,
+                         "reason": sample_reason or "pharmcat_pipeline failed"})
+        errors.append([pid, str(report_dir), "ERROR", "PHARMCAT_FAILED",
+                       sample_reason or "pharmcat_pipeline failed"])
+        continue
+
     manifest_rows.append({
         "participant_id": pid,
         "country": country,
@@ -390,6 +451,8 @@ for report_dir in sorted(Path(".").glob("pharmcat_*")):
     report_paths = sorted(report_dir.glob("*.report.tsv"))
     if not report_paths:
         errors.append([pid, str(report_dir), "ERROR", "MISSING_REPORT_TSV", "No PharmCAT report TSV produced"])
+        failures.append({"participant_id": pid, "country": country,
+                         "status": "failed", "reason": "No PharmCAT report TSV produced"})
         continue
     if len(report_paths) > 1:
         warnings.append([pid, str(report_dir), "WARNING", "MULTIPLE_REPORT_TSV", f"Using {report_paths[0].name}"])
@@ -522,6 +585,28 @@ with open("pgx_country_summary.tsv", "w", newline="") as handle:
             "frequency": f"{(count / sample_count):.6f}" if sample_count else "0.000000",
         })
 
+# Mark down any expected participant that never produced a report (dropped in
+# prepare_vcf, or an uncatchable container kill in pharmcat_pipeline).
+expected = {}
+expected_path = Path("expected_participants.tsv")
+if expected_path.exists():
+    with open(expected_path, newline="") as handle:
+        for row in csv.DictReader(handle, delimiter="\\t"):
+            epid = clean(row.get("participant_id"))
+            if epid:
+                expected[epid] = clean(row.get("country"))
+for epid, ecountry in expected.items():
+    if epid not in reported_pids:
+        failures.append({"participant_id": epid, "country": ecountry, "status": "failed",
+                         "reason": "no PharmCAT output produced (task dropped or killed)"})
+        errors.append([epid, "", "ERROR", "NO_OUTPUT",
+                       "no PharmCAT output produced (task dropped or killed)"])
+
+with open("pgx_failures.tsv", "w", newline="") as handle:
+    writer = csv.DictWriter(handle, fieldnames=["participant_id", "country", "status", "reason"], delimiter="\\t")
+    writer.writeheader()
+    writer.writerows(sorted(failures, key=lambda r: (r["country"], r["participant_id"])))
+
 with open("errors.tsv", "w", newline="") as handle:
     writer = csv.writer(handle, delimiter="\\t")
     writer.writerow(["participant_id", "file", "severity", "code", "message"])
@@ -533,6 +618,9 @@ with open("warnings.tsv", "w", newline="") as handle:
     writer.writerows(warnings)
 
 with open("pgx_pipeline.log", "w") as handle:
+    handle.write(f"expected_participants={len(expected)}\\n")
+    handle.write(f"succeeded_participants={len(manifest_rows)}\\n")
+    handle.write(f"failed_participants={len(failures)}\\n")
     handle.write(f"participants={len(manifest_rows)}\\n")
     handle.write(f"participant_gene_rows={len(participant_rows)}\\n")
     handle.write(f"participant_possible_genotype_rows={len(possible_rows)}\\n")
@@ -540,6 +628,10 @@ with open("pgx_pipeline.log", "w") as handle:
     handle.write(f"country_summary_rows={len(country_counts)}\\n")
     handle.write(f"errors={len(errors)}\\n")
     handle.write(f"warnings={len(warnings)}\\n")
+
+if failures:
+    print(f"[bv] PGx: {len(failures)} participant(s) marked down (see pgx_failures.tsv); "
+          f"{len(manifest_rows)} succeeded", flush=True)
 PY
 
     """

@@ -2,7 +2,7 @@ apiVersion: syftbox.openmined.org/v1alpha1
 kind: Flow
 metadata:
   name: 07_pypgx_rs
-  version: 0.2.3
+  version: 0.2.4
 spec:
   inputs:
     samplesheet:
@@ -20,6 +20,7 @@ spec:
         country_gene_genotype_counts: File(pypgx_country_gene_genotype_counts.tsv)
         country_gene_genotype_counts_normalized: File(pypgx_country_gene_genotype_counts_normalized.tsv)
         country_summary: File(pypgx_country_summary.tsv)
+        failures: File(pypgx_failures.tsv)
         errors: File(errors.tsv)
         warnings: File(warnings.tsv)
         pipeline_log: File(pypgx_pipeline.log)

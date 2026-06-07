@@ -2,7 +2,7 @@ apiVersion: syftbox.openmined.org/v1alpha1
 kind: Module
 metadata:
   name: 07_pypgx_rs
-  version: 0.2.3
+  version: 0.2.4
   authors:
     - madhava@openmined.org
   description: |
@@ -75,9 +75,15 @@ spec:
       format:
         kind: tsv
       path: warnings.tsv
+    - name: failures
+      type: File
+      description: Participants that failed PyPGx (OOM SIGKILL, conversion error, or dropped/killed) with the reason — the pipeline marks them down and continues.
+      format:
+        kind: tsv
+      path: pypgx_failures.tsv
     - name: pipeline_log
       type: File
-      description: PyPGx-rs pipeline summary log.
+      description: PyPGx-rs pipeline summary log (expected/succeeded/failed participant counts).
       path: pypgx_pipeline.log
   parameters:
     - name: pypgx_rs_image

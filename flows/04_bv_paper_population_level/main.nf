@@ -12,7 +12,7 @@
 //       locus_key; downstream FST/AIMs join on locus_key so results are
 //       unchanged. Runs one country at a time by default (params.country_forks).
 //
-//   population_fst_aims  (ghcr.io/madhavajay/biovault-popgen:0.2.3-fast)
+//   population_fst_aims  (ghcr.io/madhavajay/biovault-popgen:0.2.4-fast)
 //       Gathers every country's outputs, then FST (load/merge -> WC84 ->
 //       visualise) and AIMs (merge w/ bundled gnomAD ref -> differential SNPs
 //       -> AIMs panels). FST/AIMs scripts are BAKED into biovault-popgen at
@@ -176,7 +176,7 @@ process country_allele_freq {
 }
 
 process population_fst_aims {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.2.3-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.2.4-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy 'terminate'

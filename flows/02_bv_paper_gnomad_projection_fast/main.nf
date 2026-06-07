@@ -47,7 +47,7 @@ workflow USER {
 }
 
 process gnomad_projection_fast {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.2.3-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.2.4-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy 'terminate'

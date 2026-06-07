@@ -12,6 +12,8 @@ PUSH="${PUSH:-0}"
 
 IMAGE_VERSIONED="${IMAGE_NAME}:${VERSION}-amd64"
 IMAGE_LATEST="${IMAGE_NAME}:latest-amd64"
+# Plain :latest (no -amd64 suffix) — the tag the flows reference.
+IMAGE_LATEST_PLAIN="${IMAGE_NAME}:latest"
 
 REF_DIR="${ROOT_DIR}/.docker/reference/hgp1k_admixture"
 FORCE_REFERENCE="${FORCE_REFERENCE:-0}"
@@ -64,6 +66,7 @@ docker build \
   -t "${LOCAL_TAG}" \
   -t "${IMAGE_VERSIONED}" \
   -t "${IMAGE_LATEST}" \
+  -t "${IMAGE_LATEST_PLAIN}" \
   "${ROOT_DIR}"
 
 echo
@@ -71,8 +74,10 @@ echo "Built:"
 echo "  ${LOCAL_TAG}"
 echo "  ${IMAGE_VERSIONED}"
 echo "  ${IMAGE_LATEST}"
+echo "  ${IMAGE_LATEST_PLAIN}"
 
 if [ "${PUSH}" = "1" ]; then
   docker push "${IMAGE_VERSIONED}"
   docker push "${IMAGE_LATEST}"
+  docker push "${IMAGE_LATEST_PLAIN}"
 fi

@@ -1,0 +1,106 @@
+name: build-biovault-admixture
+
+# Builds the biovault-admixture image (plink/plink2/admixture + the baked
+# HGP1K ADMIXTURE reference BED) and publishes it to GHCR on merge to main
+# (or manual dispatch). Tags: <version>-amd64, latest-amd64, sha-<short>-amd64.
+#
+# Reference data is NOT regenerated in CI (that needs the ~700 MB filtered
+# 1KGP VCFs). Instead the committed split archive in data/hgp1k_900_sex_bias/
+# is reassembled into .docker/reference/hgp1k_admixture/ and baked in — the
+# same approach the biovault-popgen workflow uses for data/hgp1k_dosage_split.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docker/admixture/Dockerfile
+      - build_admixture_docker.sh
+      - "data/hgp1k_900_sex_bias/**"
+      - "03_individual_level/sex_biased_admixture_hgp1k/scripts/**"
+      - "03_individual_level/sex_biased_admixture_find_k/scripts/**"
+      - "flows/03_bv_paper_sex_biased_admixture_hgp1k/reference/reassemble_reference.sh"
+      - .github/workflows/build-biovault-admixture.yml
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image version tag (defaults to build_admixture_docker.sh VERSION)"
+        required: false
+        default: ""
+
+concurrency:
+  group: build-biovault-admixture-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/biovault-admixture
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL || true
+          docker system prune -af || true
+          df -h /
+
+      - name: Reassemble HGP1K ADMIXTURE reference from committed shards
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          shards=(data/hgp1k_900_sex_bias/hgp1k_900_sex_bias.tar.gz.*)
+          if [ "${#shards[@]}" -eq 0 ]; then
+            echo "::error::no HGP1K_900 reference shards in data/hgp1k_900_sex_bias/"
+            exit 1
+          fi
+          bash flows/03_bv_paper_sex_biased_admixture_hgp1k/reference/reassemble_reference.sh
+          ls -lh .docker/reference/hgp1k_admixture/
+          test -s .docker/reference/hgp1k_admixture/reference_auto.bed
+          test -s .docker/reference/hgp1k_admixture/reference_x.bed
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve version
+        id: ver
+        run: |
+          v="${{ github.event.inputs.version }}"
+          if [ -z "$v" ]; then
+            v="$(sed -nE 's/^VERSION="\$\{VERSION:-([^}]+)\}".*/\1/p' build_admixture_docker.sh | head -1)"
+          fi
+          [ -n "$v" ] || v="1.4.0"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "sha=sha-$(echo "${{ github.sha }}" | cut -c1-12)" >> "$GITHUB_OUTPUT"
+
+      - name: Build + push admixture image (reference already reassembled)
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          PLATFORM: linux/amd64
+          PUSH: "1"
+        run: bash build_admixture_docker.sh
+
+      - name: Tag + push sha image
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          S="${{ steps.ver.outputs.sha }}"
+          docker tag "${IMAGE_NAME}:${V}-amd64" "${IMAGE_NAME}:${S}-amd64"
+          docker push "${IMAGE_NAME}:${S}-amd64"
+          echo "Published:"
+          echo "  ${IMAGE_NAME}:${V}-amd64"
+          echo "  ${IMAGE_NAME}:latest-amd64"
+          echo "  ${IMAGE_NAME}:${S}-amd64"

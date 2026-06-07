@@ -23,7 +23,7 @@ if (!params.containsKey('pypgx_assembly')) {
 
 def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.32'
 def PYPGX_RS_IMAGE = params.pypgx_rs_image ?: 'ghcr.io/madhavajay/pypgx-rs:latest'
-def POPGEN_IMAGE = System.getenv('POPGEN_IMAGE') ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.3-fast'
+def POPGEN_IMAGE = System.getenv('POPGEN_IMAGE') ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.4-fast'
 
 def normalizeFacet(String raw) {
     return (raw ?: '').trim()
@@ -62,9 +62,19 @@ workflow USER {
             .ifEmpty {
                 throw new IllegalArgumentException("No valid participants with readable genotype files remained")
             }
+        // Full expected roster — aggregate_pypgx diffs this against the
+        // participants that actually produced a report to mark down any that
+        // were dropped/killed (e.g. an OOM SIGKILL) before writing a status.
+        def expected_manifest = checked
+            .map { pid, country, gf -> "${pid}\t${country}" }
+            .collectFile(name: 'expected_participants.tsv', newLine: true,
+                         seed: "participant_id\tcountry")
         def vcfs = prepare_vcf(checked)
         def reports = pypgx_rs_pipeline(vcfs.vcf)
-        def aggregate = aggregate_pypgx(reports.report_dir.collect(flat: false))
+        def aggregate = aggregate_pypgx(
+            reports.report_dir.collect(flat: false).ifEmpty([]),
+            expected_manifest
+        )
 
     emit:
         participant_results = aggregate.participant_results
@@ -73,6 +83,7 @@ workflow USER {
         country_gene_genotype_counts = aggregate.country_gene_genotype_counts
         country_gene_genotype_counts_normalized = aggregate.country_gene_genotype_counts_normalized
         country_summary = aggregate.country_summary
+        failures = aggregate.failures
         errors = aggregate.errors
         warnings = aggregate.warnings
         pipeline_log = aggregate.pipeline_log
@@ -83,7 +94,10 @@ process prepare_vcf {
     containerOptions '--entrypoint=""'
     stageInMode 'symlink'
     tag { participant_id }
-    errorStrategy { params.nextflow.error_strategy }
+    // Fail-soft: a single unconvertible file must not abort the cohort. A
+    // dropped participant produces no VCF -> no report -> aggregate_pypgx marks
+    // it down via the expected-vs-reported diff.
+    errorStrategy 'ignore'
     maxRetries { params.nextflow.max_retries }
 
     input:
@@ -124,7 +138,12 @@ process pypgx_rs_pipeline {
     containerOptions '--entrypoint=""'
     stageInMode 'symlink'
     tag { participant_id }
-    errorStrategy 'terminate'
+    // Fail-soft: one bad file must not kill the cohort. The script catches a
+    // failed pypgx run, records a status row, and exits 0. 'ignore' is the
+    // backstop for an uncatchable container kill — e.g. an OOM SIGKILL (exit
+    // 137) where the script gets no chance to write status; aggregate_pypgx
+    // then marks the participant down via the expected-vs-reported diff.
+    errorStrategy 'ignore'
     maxRetries { params.nextflow.max_retries }
 
     input:
@@ -137,43 +156,10 @@ process pypgx_rs_pipeline {
     prefix = safeId(participant_id)
     def genesArg = params.pypgx_genes ? "--genes ${shellQuote(params.pypgx_genes)}" : ""
     """
-    set -euo pipefail
+    set -uo pipefail
     out="pypgx_${prefix}"
     mkdir -p "\${out}/raw"
-
-    input_name=${shellQuote(vcf_file.getName())}
-    if ! command -v bgzip >/dev/null 2>&1 || ! command -v tabix >/dev/null 2>&1; then
-        echo "pypgx-rs image must provide bgzip and tabix" >&2
-        exit 1
-    fi
-    case "\${input_name}" in
-        *.gz|*.bgz)
-            gzip -dc "\${input_name}" > input.raw.vcf
-            ;;
-        *)
-            cat "\${input_name}" > input.raw.vcf
-            ;;
-    esac
-    awk '
-        /^#/ { print > "input.header.vcf"; next }
-        {
-            chrom = \$1
-            sub(/^chr/, "", chrom)
-            rank = 0
-            if (chrom ~ /^[0-9]+\$/) rank = chrom + 0
-            else if (chrom == "X") rank = 23
-            else if (chrom == "Y") rank = 24
-            else if (chrom == "M" || chrom == "MT") rank = 25
-            else next
-            if (rank < 1 || rank > 25) next
-            print rank "\\t" \$2 "\\t" \$0
-        }
-    ' input.raw.vcf \\
-        | sort -t \$'\\t' -k1,1n -k2,2n \\
-        | cut -f3- > input.records.vcf
-    cat input.header.vcf input.records.vcf | bgzip -c > input.vcf.gz
-    tabix -f -p vcf input.vcf.gz
-
+    # Metadata up-front so a failed sample stays attributable.
     {
         echo "participant_id=${participant_id}"
         echo "country=${country}"
@@ -181,11 +167,61 @@ process pypgx_rs_pipeline {
         echo "genes=${params.pypgx_genes ?: ''}"
     } > "\${out}/metadata.properties"
 
-    pypgx run-ngs-pipeline \\
-        --vcf input.vcf.gz \\
-        --assembly ${shellQuote(params.pypgx_assembly)} \\
-        --output "\${out}/raw" \\
-        ${genesArg}
+    run_log="\${out}/run.log"
+    status=ok
+    reason=""
+    input_name=${shellQuote(vcf_file.getName())}
+    # Guarded subshell: VCF normalisation + pypgx. pipefail is inherited.
+    (
+        set -e
+        if ! command -v bgzip >/dev/null 2>&1 || ! command -v tabix >/dev/null 2>&1; then
+            echo "pypgx-rs image must provide bgzip and tabix" >&2
+            exit 1
+        fi
+        case "\${input_name}" in
+            *.gz|*.bgz)
+                gzip -dc "\${input_name}" > input.raw.vcf
+                ;;
+            *)
+                cat "\${input_name}" > input.raw.vcf
+                ;;
+        esac
+        awk '
+            /^#/ { print > "input.header.vcf"; next }
+            {
+                chrom = \$1
+                sub(/^chr/, "", chrom)
+                rank = 0
+                if (chrom ~ /^[0-9]+\$/) rank = chrom + 0
+                else if (chrom == "X") rank = 23
+                else if (chrom == "Y") rank = 24
+                else if (chrom == "M" || chrom == "MT") rank = 25
+                else next
+                if (rank < 1 || rank > 25) next
+                print rank "\\t" \$2 "\\t" \$0
+            }
+        ' input.raw.vcf \\
+            | sort -t \$'\\t' -k1,1n -k2,2n \\
+            | cut -f3- > input.records.vcf
+        cat input.header.vcf input.records.vcf | bgzip -c > input.vcf.gz
+        tabix -f -p vcf input.vcf.gz
+
+        pypgx run-ngs-pipeline \\
+            --vcf input.vcf.gz \\
+            --assembly ${shellQuote(params.pypgx_assembly)} \\
+            --output "\${out}/raw" \\
+            ${genesArg}
+    ) > "\${run_log}" 2>&1
+    rc=\$?
+    if [ "\${rc}" -ne 0 ]; then
+        status=failed
+        reason="\$(tail -n 5 "\${run_log}" 2>/dev/null | tr '\\t\\n' '  ' | sed 's/  */ /g' | cut -c1-300)"
+        echo "[bv] WARNING: pypgx_rs_pipeline failed for ${shellQuote(participant_id)} (rc=\${rc}): \${reason}" >&2
+    fi
+    { printf 'participant_id\\tstatus\\treason\\n'; \\
+      printf '%s\\t%s\\t%s\\n' ${shellQuote(participant_id)} "\${status}" "\${reason}"; } \\
+      > "\${out}/status.tsv"
+    exit 0
     """
 }
 
@@ -198,6 +234,7 @@ process aggregate_pypgx {
 
     input:
         path report_dirs
+        path expected_manifest
 
     output:
         path "pypgx_participant_results.tsv", emit: participant_results
@@ -206,6 +243,7 @@ process aggregate_pypgx {
         path "pypgx_country_gene_genotype_counts.tsv", emit: country_gene_genotype_counts
         path "pypgx_country_gene_genotype_counts_normalized.tsv", emit: country_gene_genotype_counts_normalized
         path "pypgx_country_summary.tsv", emit: country_summary
+        path "pypgx_failures.tsv", emit: failures
         path "errors.tsv", emit: errors
         path "warnings.tsv", emit: warnings
         path "pypgx_pipeline.log", emit: pipeline_log
@@ -300,12 +338,32 @@ def result_rows(report_dir):
 participant_rows = []
 errors = []
 warnings = []
+failures = []
+reported_pids = set()
 for report_dir in sorted(Path(".").glob("pypgx_*")):
     if not report_dir.is_dir():
         continue
     meta = read_meta(report_dir)
     pid = meta.get("participant_id") or report_dir.name.removeprefix("pypgx_")
     country = meta.get("country") or "Unknown"
+    if pid:
+        reported_pids.add(pid)
+
+    # Per-sample fail-soft status written by pypgx_rs_pipeline.
+    sample_status, sample_reason = "ok", ""
+    status_path = report_dir / "status.tsv"
+    if status_path.exists():
+        with open(status_path, newline="") as handle:
+            srow = next(csv.DictReader(handle, delimiter="\\t"), {}) or {}
+        sample_status = clean(srow.get("status")) or "ok"
+        sample_reason = clean(srow.get("reason"))
+    if sample_status != "ok":
+        failures.append({"participant_id": pid, "country": country,
+                         "status": sample_status,
+                         "reason": sample_reason or "pypgx_rs_pipeline failed"})
+        errors.append((pid, "ERROR", "pypgx_failed", sample_reason or "pypgx_rs_pipeline failed"))
+        continue
+
     rows = result_rows(report_dir)
     if not rows:
         errors.append((pid, "ERROR", "no_results", f"No PyPGx results.tsv found under {report_dir}/raw"))
@@ -389,6 +447,28 @@ with open("pypgx_country_summary.tsv", "w", newline="") as handle:
         d = summary_denom[(country, gene)]
         writer.writerow([country, gene, genotype, phenotype, count, d, f"{(count / d) if d else 0:.6f}"])
 
+# Mark down any expected participant that never produced a report (dropped in
+# prepare_vcf, or an uncatchable OOM SIGKILL in pypgx_rs_pipeline).
+expected = {}
+expected_path = Path("expected_participants.tsv")
+if expected_path.exists():
+    with open(expected_path, newline="") as handle:
+        for row in csv.DictReader(handle, delimiter="\\t"):
+            epid = clean(row.get("participant_id"))
+            if epid:
+                expected[epid] = clean(row.get("country"))
+for epid, ecountry in expected.items():
+    if epid not in reported_pids:
+        failures.append({"participant_id": epid, "country": ecountry, "status": "failed",
+                         "reason": "no PyPGx output produced (task dropped or killed)"})
+        errors.append((epid, "ERROR", "no_output",
+                       "no PyPGx output produced (task dropped or killed)"))
+
+with open("pypgx_failures.tsv", "w", newline="") as handle:
+    writer = csv.DictWriter(handle, fieldnames=["participant_id", "country", "status", "reason"], delimiter="\\t")
+    writer.writeheader()
+    writer.writerows(sorted(failures, key=lambda r: (r["country"], r["participant_id"])))
+
 with open("errors.tsv", "w", newline="") as handle:
     writer = csv.writer(handle, delimiter="\\t")
     writer.writerow(["participant_id", "severity", "code", "message"])
@@ -400,9 +480,16 @@ with open("warnings.tsv", "w", newline="") as handle:
     writer.writerows(warnings)
 
 with open("pypgx_pipeline.log", "w") as handle:
+    handle.write(f"expected_participants={len(expected)}\\n")
+    handle.write(f"succeeded_participants={len(set(r['participant_id'] for r in participant_rows))}\\n")
+    handle.write(f"failed_participants={len(failures)}\\n")
     handle.write(f"participants={len(set(r['participant_id'] for r in participant_rows))}\\n")
     handle.write(f"participant_rows={len(participant_rows)}\\n")
     handle.write(f"errors={len(errors)}\\n")
+
+if failures:
+    print(f"[bv] PyPGx: {len(failures)} participant(s) marked down (see pypgx_failures.tsv); "
+          f"{len(set(r['participant_id'] for r in participant_rows))} succeeded", flush=True)
 PY
     """
 }

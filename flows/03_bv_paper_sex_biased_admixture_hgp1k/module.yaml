@@ -1,0 +1,104 @@
+apiVersion: syftbox.openmined.org/v1alpha1
+kind: Module
+metadata:
+  name: 03_bv_paper_sex_biased_admixture_hgp1k
+  version: 0.2.4
+  authors:
+    - madhava@openmined.org
+  description: |
+    HGP1K-anchored sex-biased ADMIXTURE. Runs joint ADMIXTURE of the study
+    cohort plus a frozen 1000 Genomes reference (300 AFR + 300 EUR + 300 SAS
+    unrelated founders, baked as a PLINK BED) at K=3,4,5 — once on the combined
+    genome, then separately on autosomes and X. Anonymous ADMIXTURE components
+    are labelled by which reference superpopulation loads highest, which makes
+    the autosome and X runs directly comparable; a component over-represented
+    on X (vs autosomes) is the sex-biased admixture signal.
+
+    Replaces the NMF-based sex_biased_admixture: ancestry now comes from
+    reference-anchored ADMIXTURE rather than unsupervised NMF. The `sex` facet
+    is materialized into sex_mapping.tsv and applied via plink2 --update-sex so
+    male X is encoded haploid (dosage 0/1) — sex is never inferred.
+spec:
+  runner:
+    kind: nextflow
+    entrypoint: main.nf
+    template: dynamic-nextflow
+    image: ghcr.io/madhavajay/biovault-admixture:latest
+  inputs:
+    - name: participants
+      type: List[GenotypeRecord]
+      description: >
+        CSV/TSV with participant_id, genotype_file and a sex facet column.
+        genotype_file points to a DDNA/GSAv3 TXT genotype file.
+      required_facets:
+        - sex
+      format:
+        kind: csv
+        mapping:
+          participant_id: participant_id
+          genotype_file: genotype_file
+  outputs:
+    - name: sex_bias_x_vs_auto
+      type: File
+      description: Per-K, per-ancestry mean study proportion on autosomes vs X (the sex-bias table) with per-sex X breakdown.
+      format:
+        kind: tsv
+      path: sex_bias_x_vs_auto.tsv
+    - name: sex_bias_plot
+      type: File
+      description: Bar chart of mean study ancestry on autosomes vs X per K (PNG).
+      path: sex_bias_x_vs_auto.png
+    - name: sex_bias_plot_pdf
+      type: File
+      description: Cohort autosomes-vs-X bar chart (PDF).
+      path: sex_bias_x_vs_auto.pdf
+    - name: sex_bias_per_sample
+      type: File
+      description: Per-individual autosomal vs X proportion (+ delta) per labelled ancestry, per K — the row-level data behind the figures.
+      format:
+        kind: tsv
+      path: sex_bias_per_sample_K*.tsv
+    - name: figures
+      type: File
+      description: 4-panel sex-biased admixture figure per K (PNG) — per-individual scatter/lollipop, stacked component bars, cohort mean.
+      path: figure_sex_biased_admixture_K*.png
+    - name: figures_pdf
+      type: File
+      description: 4-panel sex-biased admixture figure per K (PDF).
+      path: figure_sex_biased_admixture_K*.pdf
+    - name: component_labels
+      type: File
+      description: ADMIXTURE component -> ancestry label map, per run (combined/auto/x) and K.
+      format:
+        kind: tsv
+      path: component_labels.tsv
+    - name: qc_report
+      type: File
+      description: Variant/sample counts per compartment, common SNPs, pruned counts, QC params.
+      path: qc_report.txt
+    - name: labeled_q_files
+      type: File
+      description: Per run/K ancestry-labelled Q tables (sample_id, proportions, group, superpopulation, sex).
+      path: admixture_*_labeled_Q.tsv
+    - name: admixture_q_files
+      type: File
+      description: Raw ADMIXTURE Q matrices for every run/K.
+      path: admixture_*.Q
+    - name: admixture_p_files
+      type: File
+      description: Raw ADMIXTURE P matrices for every run/K.
+      path: admixture_*.P
+    - name: admixture_logs
+      type: File
+      description: ADMIXTURE logs for every run/K.
+      path: admixture_*.log
+    - name: plink_bed_archive
+      type: File
+      description: Downloadable archive of the study cohort PLINK BED.
+      path: plink_bed.tar.gz
+  parameters:
+    - name: admixture_image
+      type: String
+      description: Optional Docker image override for the ADMIXTURE/analysis stage.
+      required: false
+  assets: []

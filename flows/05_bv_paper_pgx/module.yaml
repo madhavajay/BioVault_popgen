@@ -2,7 +2,7 @@ apiVersion: syftbox.openmined.org/v1alpha1
 kind: Module
 metadata:
   name: 05_bv_paper_pgx
-  version: 0.2.3
+  version: 0.2.4
   authors:
     - madhava@openmined.org
   description: |
@@ -69,9 +69,15 @@ spec:
       format:
         kind: tsv
       path: pgx_country_summary.tsv
+    - name: failures
+      type: File
+      description: Participants that failed PharmCAT (OOM/combinatorial blow-up, conversion error, or dropped/killed) with the reason — the pipeline marks them down and continues.
+      format:
+        kind: tsv
+      path: pgx_failures.tsv
     - name: pipeline_log
       type: File
-      description: PGx pipeline summary log.
+      description: PGx pipeline summary log (expected/succeeded/failed participant counts).
       path: pgx_pipeline.log
   parameters: []
   assets: []
