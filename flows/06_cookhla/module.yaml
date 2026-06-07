@@ -14,7 +14,7 @@ spec:
     kind: nextflow
     entrypoint: main.nf
     template: dynamic-nextflow
-    image: ghcr.io/madhavajay/cookhla:sha-52a661b
+    image: ghcr.io/madhavajay/cookhla-rs:latest
   inputs:
     - name: participants
       type: List[GenotypeRecord]
@@ -94,6 +94,10 @@ spec:
       required: false
     - name: cookhla_threads
       type: String
-      description: Thread count passed to CookHLA -nth.
+      description: Thread count passed to cookhla-rs --nthreads.
+      required: false
+    - name: cookhla_multiprocess
+      type: String
+      description: Process count passed to cookhla-rs --multiprocess for parallel exon/overlap imputation jobs.
       required: false
   assets: []

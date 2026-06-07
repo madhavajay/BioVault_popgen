@@ -144,6 +144,7 @@ process pypgx_rs_pipeline {
     // 137) where the script gets no chance to write status; aggregate_pypgx
     // then marks the participant down via the expected-vs-reported diff.
     errorStrategy 'ignore'
+    maxForks 1
     maxRetries { params.nextflow.max_retries }
 
     input:

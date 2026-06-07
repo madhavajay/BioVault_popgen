@@ -29,9 +29,12 @@ if (!params.containsKey('cookhla_mem')) {
 if (!params.containsKey('cookhla_threads')) {
     params.cookhla_threads = '4'
 }
+if (!params.containsKey('cookhla_multiprocess')) {
+    params.cookhla_multiprocess = '4'
+}
 
 def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: (params.biosynth_image ?: 'ghcr.io/openmined/biosynth:0.1.32')
-def COOKHLA_IMAGE = params.cookhla_image ?: 'ghcr.io/madhavajay/cookhla:sha-52a661b'
+def COOKHLA_IMAGE = params.cookhla_image ?: 'ghcr.io/madhavajay/cookhla-rs:latest'
 
 def countryValue(record) {
     def facets = record.facets ?: [:]
@@ -125,7 +128,7 @@ process cohort_bed_for_cookhla {
 
 process run_cookhla {
     container COOKHLA_IMAGE
-    containerOptions '--platform=linux/amd64 --entrypoint=""'
+    containerOptions '--entrypoint=""'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy 'terminate'
@@ -147,7 +150,7 @@ process run_cookhla {
     """
     set -euo pipefail
 
-    export PATH=/opt/conda/bin:/opt/CookHLA/dependency:\${PATH}
+    export PATH=/opt/conda/bin:/opt/conda/condabin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin:\${PATH}
     WORKDIR="\${PWD}"
     INPUT_PREFIX="\${WORKDIR}/${bed_dir}/genotypes"
     OUTDIR="\${WORKDIR}/cookhla_raw"
@@ -199,14 +202,14 @@ process run_cookhla {
             tar -czf cookhla_raw.tar.gz cookhla_raw
             exit 0
         fi
-        MAP_ARGS="-gm \${GENETIC_MAP} -ae \${AVERAGE_ERATE}"
+        MAP_ARGS="--genetic-map \${GENETIC_MAP} --average-erate \${AVERAGE_ERATE}"
     else
         MAP_ARGS=""
     fi
 
     printf 'participant_id\\tseverity\\tcode\\tmessage\\n' > errors.tsv
 
-    plink \\
+    /opt/conda/bin/plink \\
         --bfile "\${INPUT_PREFIX}" \\
         --chr 6 \\
         --from-bp 29000000 \\
@@ -228,17 +231,16 @@ process run_cookhla {
         exit 0
     fi
 
-    cd /opt/CookHLA
-    python CookHLA.py \\
-        -i "\${MHC_INPUT_PREFIX}" \\
-        -hg "${params.cookhla_input_build}" \\
-        -o "\${OUT_PREFIX}" \\
-        -ref "\${REFERENCE_PANEL}" \\
+    /usr/local/bin/cookhla \\
+        --input "\${MHC_INPUT_PREFIX}" \\
+        --human-genome "${params.cookhla_input_build}" \\
+        --out "\${OUT_PREFIX}" \\
+        --reference "\${REFERENCE_PANEL}" \\
         \${MAP_ARGS} \\
-        -mem "${params.cookhla_mem}" \\
-        -nth "${params.cookhla_threads}" \\
+        --java-memory "${params.cookhla_mem}" \\
+        --nthreads "${params.cookhla_threads}" \\
+        --multiprocess "${params.cookhla_multiprocess}" \\
         >> "\${WORKDIR}/cookhla.log" 2>&1
-    cd "\${WORKDIR}"
 
     ALLELES="\${OUT_PREFIX}.MHC.HLA_IMPUTATION_OUT.alleles"
     if [ ! -s "\${ALLELES}" ]; then
