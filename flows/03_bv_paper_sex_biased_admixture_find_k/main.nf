@@ -9,7 +9,7 @@ if (!params.containsKey('biosynth_image')) {
     params.biosynth_image = null
 }
 
-def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: (params.biosynth_image ?: 'ghcr.io/openmined/biosynth:0.1.31')
+def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: (params.biosynth_image ?: 'ghcr.io/openmined/biosynth:0.1.32')
 def FIND_K_IMAGE = params.find_k_image ?: 'ghcr.io/madhavajay/biovault-admixture:1.4.0-amd64'
 
 def ancestryValue(record) {

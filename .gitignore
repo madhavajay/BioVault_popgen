@@ -21,6 +21,7 @@ __pycache__/
 !.docker/reference/aims/gnomad_af_per_locus.tsv
 .docker/reference/pca_locus_map/
 .docker/reference/hgp1k/
+.docker/reference/hgp1k_admixture/
 .docker/reference/hgdp_tgp_vcf/
 .docker/conda_envs/
 .claude/

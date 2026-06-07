@@ -2,7 +2,7 @@ apiVersion: syftbox.openmined.org/v1alpha1
 kind: Flow
 metadata:
   name: 04_bv_paper_population_level
-  version: 0.2.2
+  version: 0.2.3
 spec:
   inputs:
     samplesheet:

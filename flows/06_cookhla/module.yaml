@@ -1,0 +1,99 @@
+apiVersion: syftbox.openmined.org/v1alpha1
+kind: Module
+metadata:
+  name: 06_cookhla
+  version: 0.2.3
+  authors:
+    - madhava@openmined.org
+  description: |
+    CookHLA flow. Selected genotype files are converted into a cohort PLINK
+    BED/BIM/FAM with biosynth, then imputed with CookHLA. Outputs include a
+    headed per-individual HLA table and country-level genotype aggregates.
+spec:
+  runner:
+    kind: nextflow
+    entrypoint: main.nf
+    template: dynamic-nextflow
+    image: ghcr.io/madhavajay/cookhla:sha-52a661b
+  inputs:
+    - name: participants
+      type: List[GenotypeRecord]
+      description: >
+        CSV/TSV with participant_id, genotype_file, and optional country facet.
+        Missing country values are retained as Unknown for aggregation.
+      format:
+        kind: csv
+        mapping:
+          participant_id: participant_id
+          genotype_file: genotype_file
+  outputs:
+    - name: hla_individual_results
+      type: File
+      description: Headed per-individual CookHLA calls with country, alleles, genotype, posterior probabilities, reference panel, and input build.
+      format:
+        kind: tsv
+      path: hla_individual_results.tsv
+    - name: hla_country_genotype_counts
+      type: File
+      description: Counts grouped by country, HLA gene, and two-field genotype; sample_count is the country/gene denominator and frequency is count/sample_count.
+      format:
+        kind: tsv
+      path: hla_country_genotype_counts.tsv
+    - name: hla_country_gene_summary
+      type: File
+      description: Per-country/per-gene sample counts and mean CookHLA combined posterior.
+      format:
+        kind: tsv
+      path: hla_country_gene_summary.tsv
+    - name: errors
+      type: File
+      description: Structured CookHLA flow errors, including invalid panel selections.
+      format:
+        kind: tsv
+      path: errors.tsv
+    - name: cookhla_log
+      type: File
+      description: CookHLA stdout/stderr log from the imputation process.
+      path: cookhla.log
+    - name: cookhla_raw_archive
+      type: File
+      description: Archive of raw CookHLA output files.
+      path: cookhla_raw.tar.gz
+  parameters:
+    - name: cookhla_image
+      type: String
+      description: Optional Docker image override for CookHLA.
+      required: false
+    - name: biosynth_image
+      type: String
+      description: Optional Docker image override for biosynth/BVS.
+      required: false
+    - name: cookhla_input_build
+      type: String
+      description: Input genome build passed to CookHLA -hg; default is 38 for GRCh38 genotype files.
+      required: false
+    - name: cookhla_panel
+      type: String
+      description: CookHLA reference panel short code. ALL is the default. If cookhla_genetic_map and cookhla_average_erate are not supplied, CookHLA generates an adaptive map for the selected reference panel.
+      required: false
+    - name: cookhla_reference_panel
+      type: String
+      description: Optional full CookHLA reference panel prefix override inside the CookHLA image.
+      required: false
+    - name: cookhla_genetic_map
+      type: String
+      description: Optional CookHLA genetic map file inside the CookHLA image. Must be supplied with cookhla_average_erate; omit both to generate a panel-matched adaptive map.
+      required: false
+    - name: cookhla_average_erate
+      type: String
+      description: Optional CookHLA average error-rate file inside the CookHLA image. Must be supplied with cookhla_genetic_map; omit both to generate a panel-matched adaptive map.
+      required: false
+    - name: cookhla_mem
+      type: String
+      description: Memory value passed to CookHLA -mem.
+      required: false
+    - name: cookhla_threads
+      type: String
+      description: Thread count passed to CookHLA -nth.
+      required: false
+  assets: []

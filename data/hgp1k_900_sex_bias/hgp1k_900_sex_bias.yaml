@@ -1,0 +1,60 @@
+version: 1
+description: >-
+  Baked HGP1K ADMIXTURE reference for the sex-biased admixture flow:
+  900 unrelated 1000 Genomes founders (300 AFR + 300 EUR + 300 SAS),
+  PLINK BED keyed by chr:pos, pre-split into autosomes (reference_auto)
+  and X (reference_x, sex-coded for male haploid handling). Reassemble
+  into .docker/reference/hgp1k_admixture/ to bake the image without the
+  raw 1KGP VCFs (not in CI).
+hash_algo: b3sum
+shard_size: "95m"
+archive_format: tar.gz
+selection:
+  source_ped: 20130606_g1k_3202_samples_ped_population.txt
+  policy: unrelated founders (FatherID==0 && MotherID==0)
+  seed: 42
+  per_superpop: { AFR: 300, EUR: 300, SAS: 300 }
+  sample_list: reference_samples.tsv  # sample_id, superpopulation, population, sex
+  per_population:
+    AFR_ACB: 40
+    AFR_ASW: 23
+    AFR_ESN: 40
+    AFR_GWD: 60
+    AFR_LWK: 43
+    AFR_MSL: 42
+    AFR_YRI: 52
+    EUR_CEU: 74
+    EUR_FIN: 49
+    EUR_GBR: 56
+    EUR_IBS: 68
+    EUR_TSI: 53
+    SAS_BEB: 57
+    SAS_GIH: 64
+    SAS_ITU: 64
+    SAS_PJL: 59
+    SAS_STU: 56
+reference:
+  reference_auto:  605544 SNPs
+  reference_x:     24467 SNPs
+archive:
+  name: hgp1k_900_sex_bias.tar.gz
+  size_bytes: 58900480
+  b3sum: 0fe24864c00131f7fce19b6bbc2a8e64ca4dca96e6b5d690dd09529cd47b6b74
+  contents:
+    - reference_auto.bed
+    - reference_auto.bim
+    - reference_auto.fam
+    - reference_x.bed
+    - reference_x.bim
+    - reference_x.fam
+    - reference_labels.tsv
+    - reference_samples.tsv
+    - build_manifest.txt
+  shards:
+    - name: hgp1k_900_sex_bias.tar.gz.aa
+      size_bytes: 58900480
+      b3sum: 0fe24864c00131f7fce19b6bbc2a8e64ca4dca96e6b5d690dd09529cd47b6b74
+instructions:
+  reassemble: cat hgp1k_900_sex_bias.tar.gz.* > hgp1k_900_sex_bias.tar.gz
+  extract: tar xzf hgp1k_900_sex_bias.tar.gz -C <dest_dir>
+  helper: flows/03_bv_paper_sex_biased_admixture_hgp1k/reference/reassemble_reference.sh

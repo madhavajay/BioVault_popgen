@@ -1,0 +1,22 @@
+apiVersion: syftbox.openmined.org/v1alpha1
+kind: Flow
+metadata:
+  name: 06_cookhla
+  version: 0.2.3
+spec:
+  inputs:
+    samplesheet:
+      type: List[GenotypeRecord]
+      description: Genotype samplesheet with participant_id, genotype_file, and optional country facet.
+  steps:
+    - id: cookhla
+      uses: ./
+      with:
+        participants: inputs.samplesheet
+      publish:
+        hla_individual_results: File(hla_individual_results.tsv)
+        hla_country_genotype_counts: File(hla_country_genotype_counts.tsv)
+        hla_country_gene_summary: File(hla_country_gene_summary.tsv)
+        errors: File(errors.tsv)
+        cookhla_log: File(cookhla.log)
+        cookhla_raw_archive: File(cookhla_raw.tar.gz)

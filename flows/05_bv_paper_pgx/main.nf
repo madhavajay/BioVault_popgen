@@ -1,11 +1,12 @@
 // BioVault popgen: PharmCAT PGx flow.
 //
-//   prepare_vcf  (BIOSYNTH_IMAGE, default ghcr.io/openmined/biosynth:0.1.31)
+//   prepare_vcf  (BIOSYNTH_IMAGE, default ghcr.io/openmined/biosynth:0.1.32)
 //       Passes VCF inputs through, or converts genotype TXT files to VCF:
 //       bvs genotype-to-vcf -i <genotype.txt> --output <pid>.vcf.gz --gzip
 //
-//   pharmcat_pipeline  (pgkb/pharmcat)
-//       Runs PharmCAT's Docker pipeline on each VCF and writes per-participant
+//   pharmcat_pipeline  (ghcr.io/madhavajay/pharmcat:cyp2d6-enabled)
+//       Filters each VCF to canonical chromosomes, sorts/BGZF-compresses it,
+//       then runs PharmCAT's Docker pipeline and writes per-participant
 //       TSV/JSON/HTML reports.
 //
 //   aggregate_pgx
@@ -14,9 +15,9 @@
 
 nextflow.enable.dsl=2
 
-def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.31'
-def PHARMCAT_IMAGE = System.getenv('PHARMCAT_IMAGE') ?: 'pgkb/pharmcat'
-def POPGEN_IMAGE = System.getenv('POPGEN_IMAGE') ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.1-fast'
+def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.32'
+def PHARMCAT_IMAGE = 'ghcr.io/madhavajay/pharmcat:cyp2d6-enabled'
+def POPGEN_IMAGE = System.getenv('POPGEN_IMAGE') ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.3-fast'
 
 def normalizeFacet(String raw) {
     return (raw ?: '').trim()
@@ -55,7 +56,6 @@ workflow USER {
             .ifEmpty {
                 throw new IllegalArgumentException("No valid participants with readable genotype files and country facets remained")
             }
-
         def vcfs = prepare_vcf(checked)
         def reports = pharmcat_pipeline(vcfs.vcf)
         def aggregate = aggregate_pgx(
@@ -66,15 +66,10 @@ workflow USER {
     emit:
         participant_results = aggregate.participant_results
         participant_possible_genotypes = aggregate.participant_possible_genotypes
+        participant_possible_genotypes_normalized = aggregate.participant_possible_genotypes_normalized
         country_gene_genotype_counts = aggregate.country_gene_genotype_counts
+        country_gene_genotype_counts_normalized = aggregate.country_gene_genotype_counts_normalized
         country_summary = aggregate.country_summary
-        participant_manifest = aggregate.participant_manifest
-        gene_country_burden = aggregate.gene_country_burden
-        pgx_plots = aggregate.pgx_plots
-        converted_vcfs = aggregate.converted_vcfs
-        pharmcat_reports = aggregate.pharmcat_reports
-        pharmcat_json = aggregate.pharmcat_json
-        pharmcat_html = aggregate.pharmcat_html
         errors = aggregate.errors
         warnings = aggregate.warnings
         pipeline_log = aggregate.pipeline_log
@@ -141,9 +136,23 @@ process pharmcat_pipeline {
     set -euo pipefail
     out="pharmcat_${prefix}"
     mkdir -p "\${out}"
-    pharmcat_pipeline ${shellQuote(vcf_file.getName())} \\
+    prepared="${prefix}.canonical.sorted.vcf.bgz"
+    case ${shellQuote(vcf_file.getName())} in
+        *.gz|*.bgz)
+            gzip -dc ${shellQuote(vcf_file.getName())}
+            ;;
+        *)
+            cat ${shellQuote(vcf_file.getName())}
+            ;;
+    esac \\
+        | awk 'BEGIN{OFS="\\t"; has_conflict_info=0} /^##INFO=<ID=CONFLICT,/ {has_conflict_info=1; print; next} /^#CHROM/ {if (!has_conflict_info) print "##INFO=<ID=CONFLICT,Number=0,Type=Flag,Description=\\"Conflicting variant/ref-alt mapping\\">"; print; next} /^#/ {print; next} \$1 ~ /^(1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|X|Y|MT|M|chr1|chr2|chr3|chr4|chr5|chr6|chr7|chr8|chr9|chr10|chr11|chr12|chr13|chr14|chr15|chr16|chr17|chr18|chr19|chr20|chr21|chr22|chrX|chrY|chrM|chrMT)\$/ {print}' \\
+        > "${prefix}.canonical.vcf"
+    bcftools sort "${prefix}.canonical.vcf" -Oz -o "\${prepared}"
+
+    pharmcat_pipeline "\${prepared}" \\
         -o "\${out}" \\
         -bf ${shellQuote(prefix)} \\
+        -matcherHtml \\
         -reporterHtml \\
         -reporterJson \\
         -reporterCallsOnlyTsv
@@ -166,15 +175,10 @@ process aggregate_pgx {
     output:
         path "pgx_participant_results.tsv", emit: participant_results
         path "pgx_participant_possible_genotypes.tsv", emit: participant_possible_genotypes
+        path "pgx_participant_possible_genotypes_normalized.tsv", emit: participant_possible_genotypes_normalized
         path "pgx_country_gene_genotype_counts.tsv", emit: country_gene_genotype_counts
+        path "pgx_country_gene_genotype_counts_normalized.tsv", emit: country_gene_genotype_counts_normalized
         path "pgx_country_summary.tsv", emit: country_summary
-        path "pgx_participant_manifest.tsv", emit: participant_manifest
-        path "pgx_gene_country_burden.tsv", emit: gene_country_burden
-        path "pgx_plots/*", emit: pgx_plots
-        path "vcfs/*.vcf*", emit: converted_vcfs
-        path "pharmcat_reports/*", emit: pharmcat_reports
-        path "pharmcat_reports/*.report.json", emit: pharmcat_json, optional: true
-        path "pharmcat_reports/*.report.html", emit: pharmcat_html, optional: true
         path "errors.tsv", emit: errors
         path "warnings.tsv", emit: warnings
         path "pgx_pipeline.log", emit: pipeline_log
@@ -182,13 +186,12 @@ process aggregate_pgx {
     script:
     """
     set -euo pipefail
-    mkdir -p vcfs pharmcat_reports
-    cp *.vcf* vcfs/ 2>/dev/null || true
 
     python3 - <<'PY'
 import csv
 import glob
 import json
+import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -297,6 +300,21 @@ def format_possible_from_tsv(row):
         return ", ".join(f"{part} ({scores[0]})" for part in parts)
     return ", ".join(parts)
 
+def strip_match_scores(possible_genotypes):
+    # PharmCAT appends match scores as parenthesized trailing integers.
+    # They are confidence/evidence scores, not genotype identity.
+    normalized = []
+    for part in clean(possible_genotypes).split(","):
+        item = part.strip()
+        if item.endswith(")"):
+            marker = item.rfind(" (")
+            if marker > 0:
+                score = item[marker + 2:-1]
+                if score.replace(".", "", 1).isdigit():
+                    item = item[:marker]
+        normalized.append(item)
+    return ", ".join(normalized)
+
 def is_reference_like(value):
     text = clean(value).lower()
     if not text:
@@ -332,14 +350,19 @@ summary_fields_country = [
     "source_diplotype",
     "count",
     "sample_count",
+    "frequency",
 ]
 
 participant_rows = []
 possible_rows = []
+possible_normalized_rows = []
 manifest_rows = []
 country_counts = Counter()
 country_gene_genotype_counts = Counter()
 country_gene_genotype_samples = defaultdict(set)
+country_gene_genotype_counts_normalized = Counter()
+country_gene_genotype_samples_normalized = defaultdict(set)
+country_gene_samples = defaultdict(set)
 burden_country_gene_samples = defaultdict(set)
 burden_country_gene_nonref = Counter()
 country_samples = defaultdict(set)
@@ -348,8 +371,6 @@ warnings = []
 
 for report_dir in sorted(Path(".").glob("pharmcat_*")):
     if not report_dir.is_dir():
-        continue
-    if report_dir.name == "pharmcat_reports":
         continue
     metadata_path = report_dir / "metadata.tsv"
     if not metadata_path.exists():
@@ -365,14 +386,6 @@ for report_dir in sorted(Path(".").glob("pharmcat_*")):
         "country": country,
         "prefix": prefix,
     })
-
-    for artifact in report_dir.iterdir():
-        if not artifact.is_file():
-            continue
-        if artifact.name == "metadata.tsv":
-            continue
-        target = Path("pharmcat_reports") / f"{prefix}{''.join(artifact.suffixes)}"
-        target.write_bytes(artifact.read_bytes())
 
     report_paths = sorted(report_dir.glob("*.report.tsv"))
     if not report_paths:
@@ -420,12 +433,23 @@ for report_dir in sorted(Path(".").glob("pharmcat_*")):
             "gene": gene,
             "possible_genotypes": possible_genotypes,
         })
+        normalized_possible_genotypes = strip_match_scores(possible_genotypes)
+        possible_normalized_rows.append({
+            "participant_id": pid,
+            "country": country,
+            "gene": gene,
+            "possible_genotypes": normalized_possible_genotypes,
+        })
         c_key = (country, gene, phenotype, recommendation_phenotype, source_diplotype)
         possible_key = (country, gene, possible_genotypes)
+        possible_normalized_key = (country, gene, normalized_possible_genotypes)
         country_counts[c_key] += 1
         country_gene_genotype_counts[possible_key] += 1
+        country_gene_genotype_counts_normalized[possible_normalized_key] += 1
         country_samples[c_key].add(pid)
         country_gene_genotype_samples[possible_key].add(pid)
+        country_gene_genotype_samples_normalized[possible_normalized_key].add(pid)
+        country_gene_samples[(country, gene)].add(pid)
         burden_cg_key = (country, gene)
         burden_country_gene_samples[burden_cg_key].add(pid)
         if not is_reference_like(source_diplotype):
@@ -447,16 +471,38 @@ with open("pgx_participant_possible_genotypes.tsv", "w", newline="") as handle:
     writer.writerows(sorted(possible_rows, key=lambda r: (r["country"], r["participant_id"], r["gene"], r["possible_genotypes"])))
 
 with open("pgx_country_gene_genotype_counts.tsv", "w", newline="") as handle:
-    writer = csv.DictWriter(handle, fieldnames=["country", "gene", "possible_genotypes", "count", "sample_count"], delimiter="\\t")
+    writer = csv.DictWriter(handle, fieldnames=["country", "gene", "possible_genotypes", "count", "sample_count", "frequency"], delimiter="\\t")
     writer.writeheader()
     for key, count in sorted(country_gene_genotype_counts.items()):
         country, gene, possible_genotypes = key
+        sample_count = len(country_gene_samples[(country, gene)])
         writer.writerow({
             "country": country,
             "gene": gene,
             "possible_genotypes": possible_genotypes,
             "count": count,
-            "sample_count": len(country_gene_genotype_samples[key]),
+            "sample_count": sample_count,
+            "frequency": f"{(count / sample_count):.6f}" if sample_count else "0.000000",
+        })
+
+with open("pgx_participant_possible_genotypes_normalized.tsv", "w", newline="") as handle:
+    writer = csv.DictWriter(handle, fieldnames=["participant_id", "country", "gene", "possible_genotypes"], delimiter="\\t")
+    writer.writeheader()
+    writer.writerows(sorted(possible_normalized_rows, key=lambda r: (r["country"], r["participant_id"], r["gene"], r["possible_genotypes"])))
+
+with open("pgx_country_gene_genotype_counts_normalized.tsv", "w", newline="") as handle:
+    writer = csv.DictWriter(handle, fieldnames=["country", "gene", "possible_genotypes", "count", "sample_count", "frequency"], delimiter="\\t")
+    writer.writeheader()
+    for key, count in sorted(country_gene_genotype_counts_normalized.items()):
+        country, gene, possible_genotypes = key
+        sample_count = len(country_gene_samples[(country, gene)])
+        writer.writerow({
+            "country": country,
+            "gene": gene,
+            "possible_genotypes": possible_genotypes,
+            "count": count,
+            "sample_count": sample_count,
+            "frequency": f"{(count / sample_count):.6f}" if sample_count else "0.000000",
         })
 
 with open("pgx_country_summary.tsv", "w", newline="") as handle:
@@ -464,6 +510,7 @@ with open("pgx_country_summary.tsv", "w", newline="") as handle:
     writer.writeheader()
     for key, count in sorted(country_counts.items()):
         country, gene, phenotype, rec_phenotype, source_diplotype = key
+        sample_count = len(country_gene_samples[(country, gene)])
         writer.writerow({
             "country": country,
             "gene": gene,
@@ -471,21 +518,8 @@ with open("pgx_country_summary.tsv", "w", newline="") as handle:
             "recommendation_lookup_phenotype": rec_phenotype,
             "source_diplotype": source_diplotype,
             "count": count,
-            "sample_count": len(country_samples[key]),
-        })
-
-with open("pgx_gene_country_burden.tsv", "w", newline="") as handle:
-    writer = csv.DictWriter(handle, fieldnames=["country", "gene", "total_calls", "non_reference_calls", "non_reference_rate"], delimiter="\\t")
-    writer.writeheader()
-    for key in sorted(burden_country_gene_samples):
-        total = len(burden_country_gene_samples[key])
-        nonref = burden_country_gene_nonref[key]
-        writer.writerow({
-            "country": key[0],
-            "gene": key[1],
-            "total_calls": total,
-            "non_reference_calls": nonref,
-            "non_reference_rate": f"{(nonref / total) if total else 0:.6f}",
+            "sample_count": sample_count,
+            "frequency": f"{(count / sample_count):.6f}" if sample_count else "0.000000",
         })
 
 with open("errors.tsv", "w", newline="") as handle:
@@ -508,7 +542,5 @@ with open("pgx_pipeline.log", "w") as handle:
     handle.write(f"warnings={len(warnings)}\\n")
 PY
 
-    mkdir -p pgx_plots
-    cp pgx_gene_country_burden.tsv pgx_plots/pgx_gene_country_burden.tsv
     """
 }

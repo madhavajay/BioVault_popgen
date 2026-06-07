@@ -1,0 +1,95 @@
+apiVersion: syftbox.openmined.org/v1alpha1
+kind: Module
+metadata:
+  name: 07_pypgx_rs
+  version: 0.2.3
+  authors:
+    - madhava@openmined.org
+  description: |
+    PyPGx-rs pharmacogenomics flow. Genotype text files are converted to VCF
+    with biosynth when needed, then pypgx-rs runs the NGS pipeline and the flow
+    aggregates unique genotype calls by country and gene.
+spec:
+  runner:
+    kind: nextflow
+    entrypoint: main.nf
+    template: dynamic-nextflow
+    image: ghcr.io/madhavajay/pypgx-rs:latest
+  inputs:
+    - name: participants
+      type: List[GenotypeRecord]
+      description: >
+        CSV/TSV with participant_id, genotype_file, and optional country facet.
+        genotype_file may point to genotype text or VCF/VCF.GZ/VCF.BGZ input.
+      format:
+        kind: csv
+        mapping:
+          participant_id: participant_id
+          genotype_file: genotype_file
+  outputs:
+    - name: participant_results
+      type: File
+      description: One row per participant PyPGx gene result, with country facet.
+      format:
+        kind: tsv
+      path: pypgx_participant_results.tsv
+    - name: participant_possible_genotypes
+      type: File
+      description: Participant-level PyPGx genotype calls.
+      format:
+        kind: tsv
+      path: pypgx_participant_possible_genotypes.tsv
+    - name: participant_possible_genotypes_normalized
+      type: File
+      description: Participant-level PyPGx genotype calls with parenthesized scores stripped if present.
+      format:
+        kind: tsv
+      path: pypgx_participant_possible_genotypes_normalized.tsv
+    - name: country_gene_genotype_counts
+      type: File
+      description: Counts grouped by country, gene, and PyPGx genotype.
+      format:
+        kind: tsv
+      path: pypgx_country_gene_genotype_counts.tsv
+    - name: country_gene_genotype_counts_normalized
+      type: File
+      description: Counts grouped by country, gene, and normalized PyPGx genotype.
+      format:
+        kind: tsv
+      path: pypgx_country_gene_genotype_counts_normalized.tsv
+    - name: country_summary
+      type: File
+      description: Counts grouped by country, gene, genotype, and phenotype.
+      format:
+        kind: tsv
+      path: pypgx_country_summary.tsv
+    - name: errors
+      type: File
+      description: Structured PyPGx flow errors.
+      format:
+        kind: tsv
+      path: errors.tsv
+    - name: warnings
+      type: File
+      description: Structured PyPGx flow warnings.
+      format:
+        kind: tsv
+      path: warnings.tsv
+    - name: pipeline_log
+      type: File
+      description: PyPGx-rs pipeline summary log.
+      path: pypgx_pipeline.log
+  parameters:
+    - name: pypgx_rs_image
+      type: String
+      description: Optional Docker image override for pypgx-rs.
+      required: false
+    - name: pypgx_genes
+      type: String
+      description: Optional comma-separated gene list passed to pypgx-rs --genes.
+      required: false
+    - name: pypgx_assembly
+      type: String
+      description: Assembly passed to pypgx-rs --assembly. Default is GRCh38.
+      required: false
+  assets: []

@@ -1,0 +1,25 @@
+apiVersion: syftbox.openmined.org/v1alpha1
+kind: Flow
+metadata:
+  name: 07_pypgx_rs
+  version: 0.2.3
+spec:
+  inputs:
+    samplesheet:
+      type: List[GenotypeRecord]
+      description: Genotype samplesheet with participant_id, genotype_file, and optional country facet.
+  steps:
+    - id: pypgx_rs
+      uses: ./
+      with:
+        participants: inputs.samplesheet
+      publish:
+        participant_results: File(pypgx_participant_results.tsv)
+        participant_possible_genotypes: File(pypgx_participant_possible_genotypes.tsv)
+        participant_possible_genotypes_normalized: File(pypgx_participant_possible_genotypes_normalized.tsv)
+        country_gene_genotype_counts: File(pypgx_country_gene_genotype_counts.tsv)
+        country_gene_genotype_counts_normalized: File(pypgx_country_gene_genotype_counts_normalized.tsv)
+        country_summary: File(pypgx_country_summary.tsv)
+        errors: File(errors.tsv)
+        warnings: File(warnings.tsv)
+        pipeline_log: File(pypgx_pipeline.log)
