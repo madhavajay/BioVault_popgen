@@ -110,7 +110,7 @@ process cohort_bed {
 }
 
 process pca_qc_fast {
-    container 'ghcr.io/madhavajay/biovault-popgen:0.2.4-fast'
+    container 'ghcr.io/madhavajay/biovault-popgen:0.2.5-fast'
     publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy 'terminate'

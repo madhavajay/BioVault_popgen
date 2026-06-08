@@ -17,7 +17,7 @@ nextflow.enable.dsl=2
 
 def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.32'
 def PHARMCAT_IMAGE = 'ghcr.io/madhavajay/pharmcat:cyp2d6-enabled'
-def POPGEN_IMAGE = System.getenv('POPGEN_IMAGE') ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.4-fast'
+def POPGEN_IMAGE = System.getenv('POPGEN_IMAGE') ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.5-fast'
 
 def normalizeFacet(String raw) {
     return (raw ?: '').trim()

@@ -2,7 +2,7 @@ apiVersion: syftbox.openmined.org/v1alpha1
 kind: Module
 metadata:
   name: 06_cookhla
-  version: 0.2.4
+  version: 0.2.5
   authors:
     - madhava@openmined.org
   description: |
@@ -74,7 +74,7 @@ spec:
       required: false
     - name: cookhla_panel
       type: String
-      description: CookHLA reference panel short code. ALL is the default. If cookhla_genetic_map and cookhla_average_erate are not supplied, CookHLA generates an adaptive map for the selected reference panel.
+      description: CookHLA reference panel short code. ALL is the default. cookhla-rs requires a matching cookhla_genetic_map and cookhla_average_erate for ALL/AFR/AMR/EAS/EUR/SAS; CEU uses the bundled example map.
       required: false
     - name: cookhla_reference_panel
       type: String
@@ -82,11 +82,11 @@ spec:
       required: false
     - name: cookhla_genetic_map
       type: String
-      description: Optional CookHLA genetic map file inside the CookHLA image. Must be supplied with cookhla_average_erate; omit both to generate a panel-matched adaptive map.
+      description: Optional CookHLA genetic map file inside the CookHLA image. Must be supplied with cookhla_average_erate. Required by cookhla-rs for ALL/AFR/AMR/EAS/EUR/SAS.
       required: false
     - name: cookhla_average_erate
       type: String
-      description: Optional CookHLA average error-rate file inside the CookHLA image. Must be supplied with cookhla_genetic_map; omit both to generate a panel-matched adaptive map.
+      description: Optional CookHLA average error-rate file inside the CookHLA image. Must be supplied with cookhla_genetic_map. Required by cookhla-rs for ALL/AFR/AMR/EAS/EUR/SAS.
       required: false
     - name: cookhla_mem
       type: String

@@ -35,6 +35,11 @@ if (!params.containsKey('cookhla_multiprocess')) {
 
 def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: (params.biosynth_image ?: 'ghcr.io/openmined/biosynth:0.1.32')
 def COOKHLA_IMAGE = params.cookhla_image ?: 'ghcr.io/madhavajay/cookhla-rs:latest'
+def EMPTY_HLA_OUTPUTS = '''
+            printf 'participant_id\\tcountry\\tfamily_id\\tindividual_id\\thla_gene\\tbroad_2_digit_call\\tspecific_4_digit_call\\tallele_1\\tallele_2\\tgenotype_4digit\\tallele_1_posterior\\tallele_2_posterior\\tcombined_posterior\\treference_panel\\tinput_build\\toutput_prefix\\n' > hla_individual_results.tsv
+            printf 'country\\thla_gene\\tgenotype_4digit\\tcount\\tsample_count\\tfrequency\\n' > hla_country_genotype_counts.tsv
+            printf 'country\\thla_gene\\tsample_count\\tmean_combined_posterior\\n' > hla_country_gene_summary.tsv
+'''
 
 def countryValue(record) {
     def facets = record.facets ?: [:]
@@ -163,19 +168,17 @@ process run_cookhla {
     PANEL="${params.cookhla_panel}"
     case "\${PANEL}" in
         ALL|AFR|AMR|EAS|EUR|SAS)
-            REFERENCE_PANEL="1000G_REF/1000G_REF.\${PANEL}.chr6.hg18.29mb-34mb.inT1DGC"
+            REFERENCE_PANEL="/opt/cookhla/1000G_REF/1000G_REF.\${PANEL}.chr6.hg18.29mb-34mb.inT1DGC"
             ;;
         CEU|HM_CEU_REF|example/HM_CEU_REF)
-            REFERENCE_PANEL="example/HM_CEU_REF"
+            REFERENCE_PANEL="/opt/cookhla/example/HM_CEU_REF"
             ;;
         *)
             {
                 printf 'participant_id\\tseverity\\tcode\\tmessage\\n'
                 printf 'cohort\\tERROR\\tinvalid_panel\\tInvalid CookHLA panel "%s"; expected one of ALL, AFR, AMR, EAS, EUR, SAS, CEU\\n' "\${PANEL}"
             } > errors.tsv
-            printf 'participant_id\\tcountry\\tfamily_id\\tindividual_id\\thla_gene\\tbroad_2_digit_call\\tspecific_4_digit_call\\tallele_1\\tallele_2\\tgenotype_4digit\\tallele_1_posterior\\tallele_2_posterior\\tcombined_posterior\\treference_panel\\tinput_build\\toutput_prefix\\n' > hla_individual_results.tsv
-            printf 'country\\thla_gene\\tgenotype_4digit\\tcount\\tsample_count\\tfrequency\\n' > hla_country_genotype_counts.tsv
-            printf 'country\\thla_gene\\tsample_count\\tmean_combined_posterior\\n' > hla_country_gene_summary.tsv
+${EMPTY_HLA_OUTPUTS}
             printf 'Invalid CookHLA panel: %s\\n' "\${PANEL}" > cookhla.log
             tar -czf cookhla_raw.tar.gz cookhla_raw
             exit 0
@@ -195,16 +198,23 @@ process run_cookhla {
                 printf 'participant_id\\tseverity\\tcode\\tmessage\\n'
                 printf 'cohort\\tERROR\\tpartial_map_override\\tCookHLA requires both cookhla_genetic_map and cookhla_average_erate, or neither so it can generate an adaptive map\\n'
             } > errors.tsv
-            printf 'participant_id\\tcountry\\tfamily_id\\tindividual_id\\thla_gene\\tbroad_2_digit_call\\tspecific_4_digit_call\\tallele_1\\tallele_2\\tgenotype_4digit\\tallele_1_posterior\\tallele_2_posterior\\tcombined_posterior\\treference_panel\\tinput_build\\toutput_prefix\\n' > hla_individual_results.tsv
-            printf 'country\\thla_gene\\tgenotype_4digit\\tcount\\tsample_count\\tfrequency\\n' > hla_country_genotype_counts.tsv
-            printf 'country\\thla_gene\\tsample_count\\tmean_combined_posterior\\n' > hla_country_gene_summary.tsv
+${EMPTY_HLA_OUTPUTS}
             printf 'Partial CookHLA map override\\n' > cookhla.log
             tar -czf cookhla_raw.tar.gz cookhla_raw
             exit 0
         fi
         MAP_ARGS="--genetic-map \${GENETIC_MAP} --average-erate \${AVERAGE_ERATE}"
+    elif [ "\${REFERENCE_PANEL}" = "/opt/cookhla/example/HM_CEU_REF" ]; then
+        MAP_ARGS="--genetic-map /opt/cookhla/example/AGM.1958BC+HM_CEU_REF.mach_step.avg.clpsB --average-erate /opt/cookhla/example/AGM.1958BC+HM_CEU_REF.aver.erate"
     else
-        MAP_ARGS=""
+        {
+            printf 'participant_id\\tseverity\\tcode\\tmessage\\n'
+            printf 'cohort\\tERROR\\tcookhla_rs_missing_adaptive_map\\tcookhla-rs cannot auto-generate adaptive genetic maps yet; panel %s requires cookhla_genetic_map and cookhla_average_erate, or use panel CEU for the bundled example map\\n' "\${PANEL}"
+        } > errors.tsv
+${EMPTY_HLA_OUTPUTS}
+        printf 'cookhla-rs requires a precomputed adaptive genetic map for panel %s; bundled map exists only for CEU/example/HM_CEU_REF\\n' "\${PANEL}" > cookhla.log
+        tar -czf cookhla_raw.tar.gz cookhla_raw
+        exit 0
     fi
 
     printf 'participant_id\\tseverity\\tcode\\tmessage\\n' > errors.tsv

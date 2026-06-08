@@ -2,7 +2,7 @@ apiVersion: syftbox.openmined.org/v1alpha1
 kind: Module
 metadata:
   name: 07_pypgx_rs
-  version: 0.2.4
+  version: 0.2.5
   authors:
     - madhava@openmined.org
   description: |
@@ -27,36 +27,6 @@ spec:
           participant_id: participant_id
           genotype_file: genotype_file
   outputs:
-    - name: participant_results
-      type: File
-      description: One row per participant PyPGx gene result, with country facet.
-      format:
-        kind: tsv
-      path: pypgx_participant_results.tsv
-    - name: participant_possible_genotypes
-      type: File
-      description: Participant-level PyPGx genotype calls.
-      format:
-        kind: tsv
-      path: pypgx_participant_possible_genotypes.tsv
-    - name: participant_possible_genotypes_normalized
-      type: File
-      description: Participant-level PyPGx genotype calls with parenthesized scores stripped if present.
-      format:
-        kind: tsv
-      path: pypgx_participant_possible_genotypes_normalized.tsv
-    - name: country_gene_genotype_counts
-      type: File
-      description: Counts grouped by country, gene, and PyPGx genotype.
-      format:
-        kind: tsv
-      path: pypgx_country_gene_genotype_counts.tsv
-    - name: country_gene_genotype_counts_normalized
-      type: File
-      description: Counts grouped by country, gene, and normalized PyPGx genotype.
-      format:
-        kind: tsv
-      path: pypgx_country_gene_genotype_counts_normalized.tsv
     - name: country_summary
       type: File
       description: Counts grouped by country, gene, genotype, and phenotype.

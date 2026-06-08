@@ -23,7 +23,7 @@ if (!params.containsKey('pypgx_assembly')) {
 
 def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.32'
 def PYPGX_RS_IMAGE = params.pypgx_rs_image ?: 'ghcr.io/madhavajay/pypgx-rs:latest'
-def POPGEN_IMAGE = System.getenv('POPGEN_IMAGE') ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.4-fast'
+def POPGEN_IMAGE = System.getenv('POPGEN_IMAGE') ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.5-fast'
 
 def normalizeFacet(String raw) {
     return (raw ?: '').trim()
@@ -77,11 +77,6 @@ workflow USER {
         )
 
     emit:
-        participant_results = aggregate.participant_results
-        participant_possible_genotypes = aggregate.participant_possible_genotypes
-        participant_possible_genotypes_normalized = aggregate.participant_possible_genotypes_normalized
-        country_gene_genotype_counts = aggregate.country_gene_genotype_counts
-        country_gene_genotype_counts_normalized = aggregate.country_gene_genotype_counts_normalized
         country_summary = aggregate.country_summary
         failures = aggregate.failures
         errors = aggregate.errors
@@ -238,11 +233,6 @@ process aggregate_pypgx {
         path expected_manifest
 
     output:
-        path "pypgx_participant_results.tsv", emit: participant_results
-        path "pypgx_participant_possible_genotypes.tsv", emit: participant_possible_genotypes
-        path "pypgx_participant_possible_genotypes_normalized.tsv", emit: participant_possible_genotypes_normalized
-        path "pypgx_country_gene_genotype_counts.tsv", emit: country_gene_genotype_counts
-        path "pypgx_country_gene_genotype_counts_normalized.tsv", emit: country_gene_genotype_counts_normalized
         path "pypgx_country_summary.tsv", emit: country_summary
         path "pypgx_failures.tsv", emit: failures
         path "errors.tsv", emit: errors
@@ -408,29 +398,6 @@ with open("pypgx_participant_possible_genotypes_normalized.tsv", "w", newline=""
         if row["genotype"]:
             genotype = re.sub(r"\\s*\\([^)]*\\)", "", row["genotype"]).strip()
             writer.writerow([row["participant_id"], row["country"], row["gene"], genotype])
-
-def write_counts(path, normalized=False):
-    counts = Counter()
-    samples = set()
-    for row in participant_rows:
-        genotype = row["genotype"]
-        if not genotype:
-            continue
-        if normalized:
-            genotype = re.sub(r"\\s*\\([^)]*\\)", "", genotype).strip()
-        key = (row["country"], row["gene"], genotype)
-        counts[key] += 1
-        samples.add((row["country"], row["gene"], row["participant_id"]))
-    denom = Counter((country, gene) for country, gene, _pid in samples)
-    with open(path, "w", newline="") as handle:
-        writer = csv.writer(handle, delimiter="\\t")
-        writer.writerow(["country", "gene", "possible_genotypes", "count", "sample_count", "frequency"])
-        for (country, gene, genotype), count in sorted(counts.items()):
-            d = denom[(country, gene)]
-            writer.writerow([country, gene, genotype, count, d, f"{(count / d) if d else 0:.6f}"])
-
-write_counts("pypgx_country_gene_genotype_counts.tsv", normalized=False)
-write_counts("pypgx_country_gene_genotype_counts_normalized.tsv", normalized=True)
 
 summary_counts = Counter()
 summary_samples = set()
