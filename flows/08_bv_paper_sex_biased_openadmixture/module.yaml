@@ -7,24 +7,26 @@ metadata:
     - madhava@openmined.org
   description: |
     HGP1K-anchored sex-biased OpenADMIXTURE. Runs joint OpenADMIXTURE of the
-    study cohort plus a frozen 1000 Genomes reference (300 AFR + 300 EUR + 300
-    SAS unrelated founders, staged as PLINK BED) at K=5 only. It runs once on
-    the combined genome, then separately on autosomes and X. Anonymous
+    study cohort plus a frozen 1000 Genomes reference (300 each from AFR, AMR,
+    EAS, EUR, and SAS, baked as PLINK BED) at K=5 only. It runs an
+    all-sample autosome-only headline K=5 result, then separately runs
+    matched female-only autosomes and X for the sex-bias comparison. Anonymous
     OpenADMIXTURE components are labelled by which reference superpopulation
     loads highest, which makes the autosome and X runs directly comparable; a
     component over-represented on X (vs autosomes) is the sex-biased admixture
     signal.
 
     This is the OpenADMIXTURE.jl sibling of the closed-source ADMIXTURE 1.4
-    HGP1K flow. The `sex` facet is materialized into sex_mapping.tsv and
-    applied via plink2 --update-sex so male X is encoded haploid (dosage 0/1);
-    sex is never inferred.
+    HGP1K flow. The BioVault image layers the HGP1K reference over the base
+    OpenADMIXTURE.jl image. OpenADMIXTURE has no ADMIXTURE-style --haploid
+    option, so male chrX is excluded from the OpenADMIXTURE X-vs-autosome
+    comparison instead of being modelled as diploid; sex is never inferred.
 spec:
   runner:
     kind: nextflow
     entrypoint: main.nf
     template: dynamic-nextflow
-    image: ghcr.io/madhavajay/openadmixture.jl:latest
+    image: ghcr.io/madhavajay/biovault-openadmixture:latest
   inputs:
     - name: participants
       type: List[GenotypeRecord]
@@ -41,7 +43,7 @@ spec:
   outputs:
     - name: sex_bias_x_vs_auto
       type: File
-      description: K=5, per-ancestry mean study proportion on autosomes vs X with per-sex X breakdown.
+      description: K=5, per-ancestry mean female-study proportion on autosomes vs X.
       format:
         kind: tsv
       path: sex_bias_x_vs_auto.tsv
@@ -69,7 +71,7 @@ spec:
       path: figure_sex_biased_openadmixture_K5.pdf
     - name: component_labels
       type: File
-      description: OpenADMIXTURE component -> ancestry label map, per run (combined/auto/x).
+      description: OpenADMIXTURE component -> ancestry label map, per run (all/auto/x).
       format:
         kind: tsv
       path: component_labels.tsv
@@ -93,10 +95,6 @@ spec:
       type: File
       description: OpenADMIXTURE logs for every run.
       path: openadmixture_*.log
-    - name: plink_bed_archive
-      type: File
-      description: Downloadable archive of the study cohort PLINK BED.
-      path: plink_bed.tar.gz
   parameters:
     - name: openadmixture_image
       type: String
@@ -104,6 +102,6 @@ spec:
       required: false
     - name: hgp1k_admixture_ref
       type: String
-      description: Optional path override for the HGP1K PLINK reference directory.
+      description: Optional in-container path override for the HGP1K PLINK reference directory.
       required: false
   assets: []

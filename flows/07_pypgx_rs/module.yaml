@@ -14,7 +14,7 @@ spec:
     kind: nextflow
     entrypoint: main.nf
     template: dynamic-nextflow
-    image: ghcr.io/madhavajay/pypgx-rs:latest
+    image: ghcr.io/madhavajay/pypgx-rs:v0.26.0-rs.1
   inputs:
     - name: participants
       type: List[GenotypeRecord]
@@ -27,12 +27,24 @@ spec:
           participant_id: participant_id
           genotype_file: genotype_file
   outputs:
+    - name: participant_results
+      type: File
+      description: Per-participant PyPGx-rs gene calls with raw phased variant tokens from consolidated-variants.zip when available.
+      format:
+        kind: tsv
+      path: pypgx_participant_results.tsv
     - name: country_summary
       type: File
       description: Counts grouped by country, gene, genotype, and phenotype.
       format:
         kind: tsv
       path: pypgx_country_summary.tsv
+    - name: phase_reclassification_groups_aggregate
+      type: File
+      description: Reclassification groups aggregated by country, gene, genotype, phenotype, and raw phased variant tokens.
+      format:
+        kind: csv
+      path: phase_reclassification_groups_aggregate.csv
     - name: errors
       type: File
       description: Structured PyPGx flow errors.

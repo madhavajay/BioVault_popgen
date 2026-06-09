@@ -12,16 +12,17 @@ Components are anonymous out of OpenADMIXTURE, so each is LABELLED by which
 reference superpopulation loads highest on it. Labelling the autosome and X
 runs against the SAME reference makes their components directly comparable.
 
-X handling (see flow README / Kathy Liu): males are hemizygous, so the study
-`sex` facet is materialised and applied (`plink2 --update-sex`) before the X
-run; PLINK then encodes male non-PAR X as haploid. All samples are kept; a
-per-sex breakdown of the X estimates is emitted.
+X handling: OpenADMIXTURE currently has no ADMIXTURE-style --haploid flag, so
+the X-vs-autosome sex-bias comparison is run on matched female-only study and
+reference samples. The all-sample headline K=5 run remains autosome-only.
 
 Pipeline (all validated against real 1KGP + bvs output):
   study_raw (bvs cohort-bed, mixed rsID/chr:pos IDs, monomorphic rows)
     -> plink1.9 round-trip + fix monomorphic ALT==REF -> A1='0'
     -> plink2 re-key chr:pos, --update-sex, --rm-dup
     -> split autosomes / X
+    -> all-sample autosome run for headline K=5
+    -> female-only autosome and X runs for sex-bias comparison
     -> per compartment: intersect with reference (chr:pos), drop strand-ambiguous
        (A/T,C/G), plink1.9 --bmerge with .missnp retry
     -> QC (geno/mind/maf/hwe) + LD prune (indep-pairwise) per compartment
@@ -34,9 +35,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import select
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -56,16 +59,52 @@ BUILD = os.environ.get("BV_BUILD", "hg38")
 SEX_TO_PLINK = {"m": "1", "male": "1", "1": "1", "f": "2", "female": "2", "2": "2"}
 
 
+def log_msg(msg: str) -> None:
+    print(f"[hgp1k] {msg}", flush=True)
+
+
 def run(cmd, cwd=None, log=None, check=True):
     cmd = [str(c) for c in cmd]
-    print(f"[hgp1k] $ {' '.join(cmd)}", flush=True)
-    proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None, text=True,
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    log_msg(f"$ {' '.join(cmd)}")
+    start = time.monotonic()
+    last_heartbeat = start
+    output: list[str] = []
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+    )
+    assert proc.stdout is not None
+    while proc.poll() is None:
+        ready, _, _ = select.select([proc.stdout], [], [], 5)
+        if ready:
+            line = proc.stdout.readline()
+            if line:
+                output.append(line)
+                sys.stdout.write(line)
+                sys.stdout.flush()
+        now = time.monotonic()
+        if now - last_heartbeat >= 60:
+            elapsed = int(now - start)
+            log_msg(f"still running after {elapsed}s: {' '.join(cmd[:4])} ...")
+            last_heartbeat = now
+
+    remainder = proc.stdout.read()
+    if remainder:
+        output.append(remainder)
+        sys.stdout.write(remainder)
+        sys.stdout.flush()
+    stdout = "".join(output)
     if log:
-        Path(log).write_text(proc.stdout, encoding="utf-8")
+        Path(log).write_text(stdout, encoding="utf-8")
     if check and proc.returncode != 0:
-        sys.stderr.write(proc.stdout + "\n")
+        sys.stderr.write(stdout + "\n")
         raise RuntimeError(f"command failed ({proc.returncode}): {' '.join(cmd)}")
+    elapsed = int(time.monotonic() - start)
+    log_msg(f"done in {elapsed}s: {' '.join(cmd[:4])} ...")
     return proc
 
 
@@ -83,6 +122,16 @@ def n_variants(prefix: Path) -> int:
 
 def read_fam_ids(prefix: Path) -> list[str]:
     return [ln.split()[1] for ln in Path(f"{prefix}.fam").open() if ln.strip()]
+
+
+def read_fam_pairs(prefix: Path) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for line in Path(f"{prefix}.fam").open():
+        if not line.strip():
+            continue
+        parts = line.split()
+        pairs.append((parts[0], parts[1]))
+    return pairs
 
 
 # --- study prep -------------------------------------------------------------
@@ -103,15 +152,35 @@ def load_sex_mapping(path: Path) -> dict[str, str]:
     return out
 
 
-def write_sex_file(sample_ids, sex_map, path: Path):
+def write_sex_file(sample_pairs: list[tuple[str, str]], sex_map: dict[str, str], path: Path):
     with path.open("w") as h:
-        h.write("#IID\tSEX\n")
-        for sid in sample_ids:
-            h.write(f"{sid}\t{sex_map.get(sid, '0')}\n")
+        h.write("#FID\tIID\tSEX\n")
+        for fid, iid in sample_pairs:
+            h.write(f"{fid}\t{iid}\t{sex_map.get(iid, sex_map.get(fid, '0'))}\n")
+
+
+def write_keep_by_sex(prefix: Path, sex_map: dict[str, str], sex_code: str, path: Path) -> int:
+    rows = []
+    for fid, iid in read_fam_pairs(prefix):
+        if sex_map.get(iid, sex_map.get(fid, "0")) == sex_code:
+            rows.append((fid, iid))
+    with path.open("w") as h:
+        for fid, iid in rows:
+            h.write(f"{fid}\t{iid}\n")
+    return len(rows)
+
+
+def filter_samples(prefix: Path, keep_file: Path, out: Path, plink2, threads, label: str) -> Path:
+    log_msg(f"filtering {label} samples")
+    run([plink2, "--bfile", prefix, "--keep", keep_file, "--make-bed", "--out", out,
+         "--allow-no-sex", "--threads", threads, "--memory", "6000"],
+        log=Path(f"{out}.log"))
+    return out
 
 
 def prep_study(study_bed: Path, sex_file: Path, work: Path, plink, plink2, threads):
     """bvs study_raw -> chr:pos-keyed, sex-coded study_chrpos."""
+    log_msg("step 1/8: normalizing study BED from biosynth output")
     clean = work / "study_clean"
     run([plink, "--bfile", study_bed, "--make-bed", "--allow-extra-chr",
          "--out", clean], log=work / "study_clean.log")
@@ -126,7 +195,8 @@ def prep_study(study_bed: Path, sex_file: Path, work: Path, plink, plink2, threa
     bim.write_text("\n".join(lines) + "\n")
 
     chrpos = work / "study_chrpos"
-    run([plink2, "--bfile", clean, "--set-all-var-ids", "@:#",
+    log_msg("step 2/8: re-keying study variants to chr:pos and applying supplied sex")
+    run([plink2, "--bfile", clean, "--allow-extra-chr", "--set-all-var-ids", "@:#",
          "--rm-dup", "exclude-all", "--update-sex", sex_file,
          "--make-bed", "--out", chrpos, "--threads", threads, "--memory", "6000"],
         log=work / "study_chrpos.log")
@@ -134,8 +204,9 @@ def prep_study(study_bed: Path, sex_file: Path, work: Path, plink, plink2, threa
 
 
 def split_compartment(study_chrpos: Path, sex_file: Path, region: str, work: Path, plink2, threads):
+    log_msg(f"step 3/8: extracting study {region} variants")
     out = work / f"study_{region}"
-    args = [plink2, "--bfile", study_chrpos, "--make-bed", "--out", out,
+    args = [plink2, "--bfile", study_chrpos, "--allow-extra-chr", "--make-bed", "--out", out,
             "--threads", threads, "--memory", "6000"]
     if region == "auto":
         args += ["--chr", "1-22"]
@@ -148,6 +219,7 @@ def split_compartment(study_chrpos: Path, sex_file: Path, region: str, work: Pat
 # --- merge study + reference (validated recipe) -----------------------------
 def merge_with_reference(study_pref: Path, ref_pref: Path, region: str,
                          work: Path, plink, plink2, threads):
+    log_msg(f"step 4/8: intersecting and merging {region} study variants with reference")
     sids = set(ln.split()[1] for ln in Path(f"{study_pref}.bim").open())
     rids = set(ln.split()[1] for ln in Path(f"{ref_pref}.bim").open())
     common = sorted(sids & rids)
@@ -202,6 +274,7 @@ def merge_with_reference(study_pref: Path, ref_pref: Path, region: str,
 
 
 def qc_and_prune(merged: Path, region: str, work: Path, plink2, threads):
+    log_msg(f"step 5/8: QC and LD-pruning {region}")
     qc = work / f"qc_{region}"
     run([plink2, "--bfile", merged, "--geno", GENO, "--mind", MIND, "--maf", MAF,
          "--hwe", HWE, "--make-bed", "--out", qc, "--allow-no-sex",
@@ -218,6 +291,7 @@ def qc_and_prune(merged: Path, region: str, work: Path, plink2, threads):
 
 
 def concat_compartments(prefixes, out: Path, work: Path, plink2, threads):
+    log_msg("step 4b/8: concatenating autosome and X merged datasets")
     mlist = work / "combine_list.txt"
     mlist.write_text("\n".join(str(p) for p in prefixes[1:]) + "\n")
     run([plink2, "--bfile", prefixes[0], "--pmerge-list", mlist, "bfile",
@@ -244,6 +318,7 @@ def openadmixture_ready(pruned: Path, work: Path, tag: str) -> Path:
 
 def run_openadmixture(pruned: Path, tag: str, k: int, work: Path, out_dir: Path,
                       openadmixture, threads) -> tuple[Path, list[str]]:
+    log_msg(f"step 6/8: running OpenADMIXTURE for {tag} K={k}")
     adx = openadmixture_ready(pruned, work, f"{tag}_K{k}")
     seed = SEED + k
     run([openadmixture, "--bed", f"{adx}.bed", "--k", k,
@@ -363,7 +438,7 @@ def build_per_sample(auto_df, x_df, k, auto_map, x_map, group="study") -> tuple[
 
 
 def plot_figure(per_sample: pd.DataFrame, cohort: pd.DataFrame, k: int,
-                labels: list, out_png: Path):
+                labels: list, out_png: Path, focal_ancestry: str | None = None):
     """4-panel figure (mirrors the old figure4): per-individual auto-vs-X
     scatter + lollipop for the most sex-biased ancestry, stacked component
     bars by sex, and the cohort mean bar. PNG + PDF."""
@@ -378,10 +453,17 @@ def plot_figure(per_sample: pd.DataFrame, cohort: pd.DataFrame, k: int,
     palette = ["#1A9641", "#4575B4", "#F46D43", "#984EA3", "#FF7F00"]
     sex_color = {"F": COL_F, "M": COL_M, "?": "#888888"}
 
-    # focal ancestry = largest |mean delta| this K (the most sex-biased one)
+    # Default focal ancestry = largest |mean delta| this K. Reference-control
+    # plots can pass the study focal ancestry so the control directly tests the
+    # same signal instead of highlighting a tiny unrelated residual.
     csub = cohort[cohort["K"] == k]
-    focal = (csub.reindex(csub["delta_x_minus_auto"].abs().sort_values(ascending=False).index)
-             ["ancestry"].iloc[0]) if not csub.empty else labels[0]
+    fallback_focal = (csub.reindex(csub["delta_x_minus_auto"].abs().sort_values(ascending=False).index)
+                      ["ancestry"].iloc[0]) if not csub.empty else labels[0]
+    focal = focal_ancestry if (
+        focal_ancestry
+        and f"{focal_ancestry}_auto" in per_sample.columns
+        and f"{focal_ancestry}_x" in per_sample.columns
+    ) else fallback_focal
     fa, fx, fd = f"{focal}_auto", f"{focal}_x", f"{focal}_delta"
 
     ps = per_sample.sort_values([f"{focal}_auto"]).reset_index(drop=True)
@@ -452,6 +534,7 @@ def plot_figure(per_sample: pd.DataFrame, cohort: pd.DataFrame, k: int,
     fig.savefig(out_png, dpi=200, bbox_inches="tight")
     fig.savefig(out_png.with_suffix(".pdf"), bbox_inches="tight")
     plt.close(fig)
+    return focal
 
 
 # --- main -------------------------------------------------------------------
@@ -477,39 +560,86 @@ def main():
 
     ref_auto = args.reference_dir / "reference_auto"
     ref_x = args.reference_dir / "reference_x"
+    log_msg(f"using reference directory: {args.reference_dir}")
     labels_df = pd.read_csv(args.reference_dir / "reference_labels.tsv", sep="\t",
                             dtype=str).rename(columns={"sample_id": "sample_id"})
     labels_df.columns = ["sample_id", "superpopulation"][:len(labels_df.columns)]
+    ref_sex = {}
+    _rs_path = args.reference_dir / "reference_samples.tsv"
+    if _rs_path.exists():
+        _rs = pd.read_csv(_rs_path, sep="\t", dtype=str)
+        if "sex" in _rs.columns:
+            ref_sex = dict(zip(_rs["sample_id"], _rs["sex"].astype(str)))
 
     # study sex (facet) -> plink sex file
     study_ids = read_fam_ids(args.study_bed)
+    study_pairs = read_fam_pairs(args.study_bed)
     sex_map = load_sex_mapping(args.sex_mapping)
     sex_file = work / "study_sex.tsv"
-    write_sex_file(study_ids, sex_map, sex_file)
+    write_sex_file(study_pairs, sex_map, sex_file)
     print(f"[hgp1k] study sex: {sum(v=='1' for v in sex_map.values())} male, "
           f"{sum(v=='2' for v in sex_map.values())} female, of {len(study_ids)} samples", flush=True)
 
-    # 1) prep study, 2) split, 3) merge study+reference per compartment
+    combined_sex = {**ref_sex, **sex_map}   # study facet wins on any overlap
+    sex_df = pd.DataFrame({"sample_id": list(combined_sex), "sex": list(combined_sex.values())})
+
+    # 1) prep study, 2) split, 3) apply OpenADMIXTURE-safe sample sets:
+    #    * all: all participants, autosomes only (headline K=5)
+    #    * auto/x: female-only study + female-only reference (sex-bias delta)
     study_chrpos = prep_study(args.study_bed, sex_file, work, plink, plink2, args.threads)
+    study_auto_all = split_compartment(study_chrpos, sex_file, "auto", work, plink2, args.threads)
+    study_x_all = split_compartment(study_chrpos, sex_file, "x", work, plink2, args.threads)
+
+    study_female_keep = work / "study_female.keep"
+    ref_female_keep = work / "reference_female.keep"
+    n_study_female = write_keep_by_sex(study_chrpos, sex_map, "2", study_female_keep)
+    n_ref_female = write_keep_by_sex(ref_auto, ref_sex, "2", ref_female_keep)
+    print(f"[hgp1k] OpenADMIXTURE sex-bias sample set: "
+          f"{n_study_female} female study, {n_ref_female} female reference", flush=True)
+    if n_study_female == 0:
+        raise RuntimeError("no female study samples available for OpenADMIXTURE X-vs-autosome comparison")
+    if n_ref_female == 0:
+        raise RuntimeError("no female reference samples available for OpenADMIXTURE X-vs-autosome comparison")
+
+    ref_auto_female = filter_samples(ref_auto, ref_female_keep, work / "reference_auto_female",
+                                     plink2, args.threads, "female reference autosome")
+    ref_x_female = filter_samples(ref_x, ref_female_keep, work / "reference_x_female",
+                                  plink2, args.threads, "female reference X")
+
     merged = {}
     study_n = {}
-    for region, ref_pref in (("auto", ref_auto), ("x", ref_x)):
-        s = split_compartment(study_chrpos, sex_file, region, work, plink2, args.threads)
-        if s is None:
-            print(f"[hgp1k] WARNING: no study {region} variants — skipping {region}", flush=True)
-            continue
-        merged[region] = merge_with_reference(s, ref_pref, region, work, plink, plink2, args.threads)
-        study_n[region] = n_variants(s)
+    sample_set_notes = [
+        f"all: all study/reference samples, autosomes only",
+        f"auto/x: female-only study ({n_study_female}) + female-only reference ({n_ref_female})",
+    ]
+    if study_auto_all is not None:
+        merged["all"] = merge_with_reference(study_auto_all, ref_auto, "all",
+                                             work, plink, plink2, args.threads)
+        study_n["all"] = n_variants(study_auto_all)
+        study_auto_female = filter_samples(study_auto_all, study_female_keep, work / "study_auto_female",
+                                           plink2, args.threads, "female study autosome")
+        merged["auto"] = merge_with_reference(study_auto_female, ref_auto_female, "auto",
+                                              work, plink, plink2, args.threads)
+        study_n["auto"] = n_variants(study_auto_female)
+    else:
+        print("[hgp1k] WARNING: no study autosome variants — skipping all/auto", flush=True)
+
+    if study_x_all is not None:
+        study_x_female = filter_samples(study_x_all, study_female_keep, work / "study_x_female",
+                                        plink2, args.threads, "female study X")
+        merged["x"] = merge_with_reference(study_x_female, ref_x_female, "x",
+                                           work, plink, plink2, args.threads)
+        study_n["x"] = n_variants(study_x_female)
+    else:
+        print("[hgp1k] WARNING: no study X variants — skipping x", flush=True)
 
     if not merged:
         raise SystemExit("ERROR: no compartments produced (no autosome or X data)")
 
-    # 4) combined = concat of the PRE-QC merged sets (identical sample sets, so
-    #    --pmerge-list concatenates cleanly); QC+prune is then applied once each.
+    # 4) QC targets. There is intentionally no auto+X combined OpenADMIXTURE run:
+    #    OpenADMIXTURE lacks ADMIXTURE's --haploid flag, so the all-sample
+    #    headline run is autosome-only and the X-vs-auto comparison is female-only.
     to_qc = dict(merged)
-    if "auto" in merged and "x" in merged:
-        to_qc["combined"] = concat_compartments([merged["auto"], merged["x"]],
-                                                work / "merged_combined", work, plink2, args.threads)
 
     # 5) QC + LD-prune each set
     runs = {}
@@ -521,17 +651,18 @@ def main():
         qc_lines.append(f"{tag}: study={sn} merged={n_variants(m)} "
                         f"pruned={n_variants(pr)} samples={len(read_fam_ids(pr))}")
 
-    # Combined sex map: study (from the facet) + reference (from the baked
-    # frozen list, coded 1/2) — so reference rows also carry sex for the
-    # negative-control figure.
-    ref_sex = {}
-    _rs_path = args.reference_dir / "reference_samples.tsv"
-    if _rs_path.exists():
-        _rs = pd.read_csv(_rs_path, sep="\t", dtype=str)
-        if "sex" in _rs.columns:
-            ref_sex = dict(zip(_rs["sample_id"], _rs["sex"].astype(str)))
-    combined_sex = {**ref_sex, **sex_map}   # study facet wins on any overlap
-    sex_df = pd.DataFrame({"sample_id": list(combined_sex), "sex": list(combined_sex.values())})
+    pre_admixture_qc = "\n".join([
+        "=== hgp1k sex-biased OpenADMIXTURE pre-run QC ===",
+        f"K values: {ks}",
+        f"reference: {args.reference_dir}",
+        f"geno={GENO} mind={MIND} maf={MAF} hwe={HWE} "
+        f"ld=({LD_WINDOW},{LD_STEP},{LD_R2})",
+        *sample_set_notes,
+        *qc_lines,
+        "NOTE: these pruned variant/sample counts are the exact PLINK BED inputs "
+        "passed to OpenADMIXTURE.",
+    ])
+    print("[hgp1k] pre-OpenADMIXTURE QC summary:\n" + pre_admixture_qc, flush=True)
 
     # 6-7) OpenADMIXTURE + labelling for every run/K
     all_labeled = []
@@ -540,6 +671,7 @@ def main():
     for tag, pref in runs.items():
         for k in ks:
             q_path, fam_ids = run_openadmixture(pref, tag, k, work, out, openadmixture, args.threads)
+            log_msg(f"step 7/8: labelling OpenADMIXTURE components for {tag} K={k}")
             df, rename = label_and_frame(q_path, fam_ids, k, labels_df, sex_df)
             frames[(tag, k)] = (df, rename)
             lab_out = out / f"openadmixture_{tag}_K{k}_labeled_Q.tsv"
@@ -555,6 +687,7 @@ def main():
     #    plot's underlying data is dumped to TSV so figures are reproducible.
     comp_frames = []
     per_sample_by_k = {}
+    log_msg("step 8/8: comparing X vs autosomal ancestry and writing figures")
     for k in ks:
         if ("auto", k) in frames and ("x", k) in frames:
             a_df, a_map = frames[("auto", k)]
@@ -570,9 +703,13 @@ def main():
         # cohort summary across all K (PNG + PDF)
         plot_x_vs_auto(sex_bias, out / "sex_bias_x_vs_auto.png")
         # per-K 4-panel figure (PNG + PDF), data behind it already in the TSVs above
+        study_focal_by_k = {}
         for k, (ps, labels) in per_sample_by_k.items():
-            plot_figure(ps, sex_bias, k, labels, out / f"figure_sex_biased_openadmixture_K{k}.png")
+            study_focal_by_k[k] = plot_figure(
+                ps, sex_bias, k, labels, out / f"figure_sex_biased_openadmixture_K{k}.png")
         print("[hgp1k] X-vs-autosome comparison:\n" + sex_bias.to_string(index=False), flush=True)
+    else:
+        study_focal_by_k = {}
 
     # 8b) reference negative control — the same figure/data for the 900 baked
     #     reference founders. They are unadmixed, so deltas sit at ~0: a built-in
@@ -596,7 +733,8 @@ def main():
         ref_sex_bias.to_csv(out / "sex_bias_x_vs_auto_reference.tsv", sep="\t", index=False)
         for k, (rps, rlabels) in ref_per_sample_by_k.items():
             plot_figure(rps, ref_sex_bias, k, rlabels,
-                        out / f"figure_sex_biased_openadmixture_K{k}_reference.png")
+                        out / f"figure_sex_biased_openadmixture_K{k}_reference.png",
+                        focal_ancestry=study_focal_by_k.get(k))
         print("[hgp1k] reference negative-control (deltas should be ~0):\n"
               + ref_sex_bias.to_string(index=False), flush=True)
 
@@ -606,9 +744,11 @@ def main():
         f"reference: {args.reference_dir}\n"
         f"geno={GENO} mind={MIND} maf={MAF} hwe={HWE} "
         f"ld=({LD_WINDOW},{LD_STEP},{LD_R2})\n"
+        + "\n".join(sample_set_notes) + "\n"
         + "\n".join(qc_lines) + "\n"
-        "NOTE: male X is haploid (dosage 0/1); X estimates include a per-sex "
-        "breakdown (mean_x_female / mean_x_male_haploid) for that reason.\n")
+        "NOTE: OpenADMIXTURE has no --haploid mode. The all run is all-sample "
+        "autosome-only; the auto/x sex-bias comparison uses matched female-only "
+        "study and reference samples.\n")
 
     if os.environ.get("BV_KEEP_WORK", "0") != "1":
         shutil.rmtree(work, ignore_errors=True)

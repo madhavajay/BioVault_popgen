@@ -12,7 +12,8 @@ REPO_ROOT="$(cd "${HERE}/../../.." && pwd)"
 
 SHARD_DIR="${SHARD_DIR:-${REPO_ROOT}/data/hgp1k_900_sex_bias}"
 DEST_DIR="${DEST_DIR:-${REPO_ROOT}/.docker/reference/hgp1k_admixture}"
-ARCHIVE="hgp1k_900_sex_bias.tar.gz"
+PACKAGE_NAME="${PACKAGE_NAME:-$(basename "${SHARD_DIR}")}"
+ARCHIVE="${ARCHIVE:-${PACKAGE_NAME}.tar.gz}"
 
 shards=( "${SHARD_DIR}/${ARCHIVE}".* )
 [ -e "${shards[0]}" ] || { echo "ERROR: no shards in ${SHARD_DIR}" >&2; exit 1; }

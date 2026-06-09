@@ -132,7 +132,10 @@ cut -f1,2 "${SAMPLES_TSV}" > "${OUT_DIR}/reference_labels.tsv"
 } > "${OUT_DIR}/build_manifest.txt"
 
 # keep the frozen selection list alongside the BED (which 1KGP samples chosen).
-cp "${SAMPLES_TSV}" "${OUT_DIR}/reference_samples.tsv"
+if [ "$(cd "$(dirname "${SAMPLES_TSV}")" && pwd)/$(basename "${SAMPLES_TSV}")" != \
+     "$(cd "${OUT_DIR}" && pwd)/reference_samples.tsv" ]; then
+    cp "${SAMPLES_TSV}" "${OUT_DIR}/reference_samples.tsv"
+fi
 
 # the all-chr reference.* (bed/bim/fam + pgen/psam/pvar merge intermediates) is
 # only used to derive the auto/X split; runtime reads reference_auto /

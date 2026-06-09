@@ -362,7 +362,7 @@ def build_per_sample(auto_df, x_df, k, auto_map, x_map, group="study") -> tuple[
 
 
 def plot_figure(per_sample: pd.DataFrame, cohort: pd.DataFrame, k: int,
-                labels: list, out_png: Path):
+                labels: list, out_png: Path, focal_ancestry: str | None = None):
     """4-panel figure (mirrors the old figure4): per-individual auto-vs-X
     scatter + lollipop for the most sex-biased ancestry, stacked component
     bars by sex, and the cohort mean bar. PNG + PDF."""
@@ -377,10 +377,17 @@ def plot_figure(per_sample: pd.DataFrame, cohort: pd.DataFrame, k: int,
     palette = ["#1A9641", "#4575B4", "#F46D43", "#984EA3", "#FF7F00"]
     sex_color = {"F": COL_F, "M": COL_M, "?": "#888888"}
 
-    # focal ancestry = largest |mean delta| this K (the most sex-biased one)
+    # Default focal ancestry = largest |mean delta| this K. Reference-control
+    # plots can pass the study focal ancestry so the control directly tests the
+    # same signal instead of highlighting a tiny unrelated residual.
     csub = cohort[cohort["K"] == k]
-    focal = (csub.reindex(csub["delta_x_minus_auto"].abs().sort_values(ascending=False).index)
-             ["ancestry"].iloc[0]) if not csub.empty else labels[0]
+    fallback_focal = (csub.reindex(csub["delta_x_minus_auto"].abs().sort_values(ascending=False).index)
+                      ["ancestry"].iloc[0]) if not csub.empty else labels[0]
+    focal = focal_ancestry if (
+        focal_ancestry
+        and f"{focal_ancestry}_auto" in per_sample.columns
+        and f"{focal_ancestry}_x" in per_sample.columns
+    ) else fallback_focal
     fa, fx, fd = f"{focal}_auto", f"{focal}_x", f"{focal}_delta"
 
     ps = per_sample.sort_values([f"{focal}_auto"]).reset_index(drop=True)
@@ -451,6 +458,7 @@ def plot_figure(per_sample: pd.DataFrame, cohort: pd.DataFrame, k: int,
     fig.savefig(out_png, dpi=200, bbox_inches="tight")
     fig.savefig(out_png.with_suffix(".pdf"), bbox_inches="tight")
     plt.close(fig)
+    return focal
 
 
 # --- main -------------------------------------------------------------------
@@ -520,6 +528,18 @@ def main():
         qc_lines.append(f"{tag}: study={sn} merged={n_variants(m)} "
                         f"pruned={n_variants(pr)} samples={len(read_fam_ids(pr))}")
 
+    pre_admixture_qc = "\n".join([
+        "=== hgp1k sex-biased ADMIXTURE pre-run QC ===",
+        f"K values: {ks}",
+        f"reference: {args.reference_dir}",
+        f"geno={GENO} mind={MIND} maf={MAF} hwe={HWE} "
+        f"ld=({LD_WINDOW},{LD_STEP},{LD_R2})",
+        *qc_lines,
+        "NOTE: these pruned variant/sample counts are the exact PLINK BED inputs "
+        "passed to ADMIXTURE.",
+    ])
+    print("[hgp1k] pre-ADMIXTURE QC summary:\n" + pre_admixture_qc, flush=True)
+
     # Combined sex map: study (from the facet) + reference (from the baked
     # frozen list, coded 1/2) — so reference rows also carry sex for the
     # negative-control figure.
@@ -569,9 +589,13 @@ def main():
         # cohort summary across all K (PNG + PDF)
         plot_x_vs_auto(sex_bias, out / "sex_bias_x_vs_auto.png")
         # per-K 4-panel figure (PNG + PDF), data behind it already in the TSVs above
+        study_focal_by_k = {}
         for k, (ps, labels) in per_sample_by_k.items():
-            plot_figure(ps, sex_bias, k, labels, out / f"figure_sex_biased_admixture_K{k}.png")
+            study_focal_by_k[k] = plot_figure(
+                ps, sex_bias, k, labels, out / f"figure_sex_biased_admixture_K{k}.png")
         print("[hgp1k] X-vs-autosome comparison:\n" + sex_bias.to_string(index=False), flush=True)
+    else:
+        study_focal_by_k = {}
 
     # 8b) reference negative control — the same figure/data for the 900 baked
     #     reference founders. They are unadmixed, so deltas sit at ~0: a built-in
@@ -595,7 +619,8 @@ def main():
         ref_sex_bias.to_csv(out / "sex_bias_x_vs_auto_reference.tsv", sep="\t", index=False)
         for k, (rps, rlabels) in ref_per_sample_by_k.items():
             plot_figure(rps, ref_sex_bias, k, rlabels,
-                        out / f"figure_sex_biased_admixture_K{k}_reference.png")
+                        out / f"figure_sex_biased_admixture_K{k}_reference.png",
+                        focal_ancestry=study_focal_by_k.get(k))
         print("[hgp1k] reference negative-control (deltas should be ~0):\n"
               + ref_sex_bias.to_string(index=False), flush=True)
 

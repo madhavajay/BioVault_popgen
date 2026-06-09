@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Package the baked HGP1K ADMIXTURE reference BED into committable, <100MB
-# GitHub-pushable shards under data/hgp1k_900_sex_bias/ — same scheme as
+# Package a baked HGP1K ADMIXTURE reference BED into committable, <100MB
+# GitHub-pushable shards under data/<package>/ — same scheme as
 # data/hgp1k_dosage_split (tar.gz | split -b 95m + a .yaml sidecar).
 #
 # The shards carry the runtime files (reference_auto/reference_x BED + labels +
@@ -14,11 +14,14 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../../.." && pwd)"
 
 SRC_DIR="${SRC_DIR:-${REPO_ROOT}/.docker/reference/hgp1k_admixture}"
-OUT_DIR="${OUT_DIR:-${REPO_ROOT}/data/hgp1k_900_sex_bias}"
-ARCHIVE="hgp1k_900_sex_bias.tar.gz"
+PACKAGE_NAME="${PACKAGE_NAME:-hgp1k_900_sex_bias}"
+OUT_DIR="${OUT_DIR:-${REPO_ROOT}/data/${PACKAGE_NAME}}"
+ARCHIVE="${ARCHIVE:-${PACKAGE_NAME}.tar.gz}"
 SHARD_SIZE="${SHARD_SIZE:-95m}"
-SAMPLES_TSV="${HERE}/reference_samples.tsv"
+SAMPLES_TSV="${SAMPLES_TSV:-${SRC_DIR}/reference_samples.tsv}"
 PED="${REPO_ROOT}/data/1kgp_high_coverage/20130606_g1k_3202_samples_ped_population.txt"
+SELECTION_POLICY="${SELECTION_POLICY:-unrelated founders (FatherID==0 && MotherID==0)}"
+SELECTION_SEED="${SELECTION_SEED:-42}"
 
 CONTENTS=(reference_auto.bed reference_auto.bim reference_auto.fam
           reference_x.bed reference_x.bim reference_x.fam
@@ -54,24 +57,33 @@ sel_summary=$(awk -F'\t' 'NR>1{sp[$2]++; pop[$2"/"$3]++; sx[$2"/"$4]++}
 echo "${sel_summary}"
 
 # 4) yaml sidecar (mirrors data/hgp1k_dosage_split/*.yaml).
-YAML="${OUT_DIR}/hgp1k_900_sex_bias.yaml"
+YAML="${OUT_DIR}/${PACKAGE_NAME}.yaml"
 {
   echo "version: 1"
   echo "description: >-"
   echo "  Baked HGP1K ADMIXTURE reference for the sex-biased admixture flow:"
-  echo "  900 unrelated 1000 Genomes founders (300 AFR + 300 EUR + 300 SAS),"
+  awk -F'\t' 'NR>1{sp[$2]++; n++} END{
+      printf "  %d 1000 Genomes samples", n;
+      for (k in sp) labels[++i]=k":"sp[k];
+      for (a=1; a<=i; a++) for (b=a+1; b<=i; b++) if (labels[a] > labels[b]) {t=labels[a]; labels[a]=labels[b]; labels[b]=t}
+      printf " (";
+      for (a=1; a<=i; a++) printf "%s%s", labels[a], (a<i ? ", " : "");
+      printf "),\n";
+  }' "${SAMPLES_TSV}"
   echo "  PLINK BED keyed by chr:pos, pre-split into autosomes (reference_auto)"
   echo "  and X (reference_x, sex-coded for male haploid handling). Reassemble"
-  echo "  into .docker/reference/hgp1k_admixture/ to bake the image without the"
-  echo "  raw 1KGP VCFs (not in CI)."
+  echo "  into .docker/reference/hgp1k_admixture/ or another reference directory"
+  echo "  to bake/use the image without the raw 1KGP VCFs (not in CI)."
   echo "hash_algo: ${HASH_ALGO}"
   echo "shard_size: \"${SHARD_SIZE}\""
   echo "archive_format: tar.gz"
   echo "selection:"
   echo "  source_ped: $(basename "${PED}")"
-  echo "  policy: unrelated founders (FatherID==0 && MotherID==0)"
-  echo "  seed: 42"
-  echo "  per_superpop: { AFR: 300, EUR: 300, SAS: 300 }"
+  echo "  policy: ${SELECTION_POLICY}"
+  echo "  seed: ${SELECTION_SEED}"
+  echo "  per_superpop:"
+  awk -F'\t' 'NR>1{c[$2]++} END{for(k in c) printf "    %s: %d\n", k, c[k]}' \
+      "${SAMPLES_TSV}" | sort
   echo "  sample_list: reference_samples.tsv  # sample_id, superpopulation, population, sex"
   echo "  per_population:"
   awk -F'\t' 'NR>1{c[$2"\t"$3]++} END{for(k in c){split(k,a,"\t"); printf "    %s_%s: %d\n", a[1], a[2], c[k]}}' \

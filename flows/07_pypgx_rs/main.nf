@@ -3,11 +3,12 @@
 //   prepare_vcf  (BIOSYNTH_IMAGE, default ghcr.io/openmined/biosynth:0.1.32)
 //       Passes VCF inputs through, or converts genotype TXT files to VCF.
 //
-//   pypgx_rs_pipeline  (ghcr.io/madhavajay/pypgx-rs:latest)
+//   pypgx_rs_pipeline  (ghcr.io/madhavajay/pypgx-rs:v0.26.0-rs.1)
 //       Runs pypgx-rs run-ngs-pipeline against each VCF.
 //
 //   aggregate_pypgx
-//       Adds country facets and aggregates unique genotypes by country/gene.
+//       Adds country facets and aggregates unique genotypes by country/gene,
+//       plus reclassification groups from results.long.tsv or alleles.zip.
 
 nextflow.enable.dsl=2
 
@@ -22,7 +23,7 @@ if (!params.containsKey('pypgx_assembly')) {
 }
 
 def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.32'
-def PYPGX_RS_IMAGE = params.pypgx_rs_image ?: 'ghcr.io/madhavajay/pypgx-rs:latest'
+def PYPGX_RS_IMAGE = params.pypgx_rs_image ?: 'ghcr.io/madhavajay/pypgx-rs:v0.26.0-rs.1'
 def POPGEN_IMAGE = System.getenv('POPGEN_IMAGE') ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.5-fast'
 
 def normalizeFacet(String raw) {
@@ -77,7 +78,9 @@ workflow USER {
         )
 
     emit:
+        participant_results = aggregate.participant_results
         country_summary = aggregate.country_summary
+        phase_reclassification_groups_aggregate = aggregate.phase_reclassification_groups_aggregate
         failures = aggregate.failures
         errors = aggregate.errors
         warnings = aggregate.warnings
@@ -233,7 +236,9 @@ process aggregate_pypgx {
         path expected_manifest
 
     output:
+        path "pypgx_participant_results.tsv", emit: participant_results
         path "pypgx_country_summary.tsv", emit: country_summary
+        path "phase_reclassification_groups_aggregate.csv", emit: phase_reclassification_groups_aggregate
         path "pypgx_failures.tsv", emit: failures
         path "errors.tsv", emit: errors
         path "warnings.tsv", emit: warnings
@@ -245,7 +250,9 @@ process aggregate_pypgx {
 
     python3 - <<'PY'
 import csv
+import hashlib
 import re
+import zipfile
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -326,7 +333,355 @@ def result_rows(report_dir):
             })
     return rows
 
+def result_candidates(raw_dir, suffix):
+    candidates = []
+    top = raw_dir / suffix
+    if top.exists():
+        candidates.append((None, top))
+    candidates.extend((p.parent.name, p) for p in sorted(raw_dir.glob(f"*/{suffix}")))
+    return candidates
+
+def phase_raw_dirs(report_dir):
+    found = {}
+    for mode in ("phased", "unphased"):
+        candidates = [
+            report_dir / mode / "raw",
+            report_dir / "raw" / mode,
+            report_dir / "raw" / mode / "raw",
+        ]
+        for raw_dir in candidates:
+            if raw_dir.exists():
+                found[mode] = raw_dir
+                break
+    if not found and (report_dir / "raw").exists():
+        found["phased"] = report_dir / "raw"
+    return found
+
+def rows_by_gene(raw_dir):
+    rows = defaultdict(list)
+    for inferred_gene, path in result_candidates(raw_dir, "results.tsv"):
+        try:
+            with path.open(newline="", errors="replace") as handle:
+                reader = csv.DictReader(handle, delimiter=detect_delimiter(path))
+                for row in reader:
+                    gene = get(row, "gene", "Gene", "symbol") or inferred_gene or path.parent.name
+                    genotype = get(row, "genotype", "Genotype", "diplotype", "Diplotype", "haplotypes", "Haplotypes")
+                    phenotype = get(row, "phenotype", "Phenotype", "phenotype_or_error", "activity", "Activity")
+                    status = get(row, "status", "Status") or ("OK" if genotype else "ERROR")
+                    error = get(row, "error", "Error", "message", "Message")
+                    hap1 = get(row, "Haplotype1", "haplotype1")
+                    hap2 = get(row, "Haplotype2", "haplotype2")
+                    if not genotype and hap1 and hap2:
+                        genotype = f"{hap1.rstrip(';')}/{hap2.rstrip(';')}"
+                    if not gene or (not genotype and not phenotype and not error):
+                        continue
+                    rows[gene].append({
+                        "gene": gene,
+                        "status": status,
+                        "genotype": genotype,
+                        "phenotype": phenotype,
+                        "error": error,
+                    })
+        except Exception as exc:
+            gene = inferred_gene or path.parent.name
+            rows[gene].append({
+                "gene": gene,
+                "status": "ERROR",
+                "genotype": "",
+                "phenotype": "",
+                "error": f"parse_error: {exc}",
+            })
+    return rows
+
+def first_gene_row(rows, gene):
+    values = rows.get(gene) or []
+    if not values:
+        return {}
+    return values[0]
+
+def hap_label(value):
+    raw = clean(value)
+    if not raw:
+        return ""
+    low = raw.lower()
+    if low in ("1", "h1", "hap1", "haplotype1", "haplotype 1"):
+        return "Haplotype1"
+    if low in ("2", "h2", "hap2", "haplotype2", "haplotype 2"):
+        return "Haplotype2"
+    m = re.search(r"([12])", low)
+    if m:
+        return f"Haplotype{m.group(1)}"
+    return raw.replace(" ", "")
+
+def sort_rank(value, fallback):
+    raw = clean(value)
+    if not raw:
+        return (fallback, "")
+    try:
+        return (float(raw), raw)
+    except ValueError:
+        return (fallback, raw)
+
+def variant_label(row):
+    direct = get(
+        row,
+        "variant",
+        "Variant",
+        "variant_data",
+        "VariantData",
+        "marker",
+        "Marker",
+        "site",
+        "Site",
+    )
+    rsid = get(row, "rsid", "RSID", "rs_id", "dbsnp", "DbSNP")
+    chrom = get(row, "chromosome", "Chromosome", "chrom", "Chr", "chr")
+    pos = get(row, "position", "Position", "pos", "grch38_position", "GRCh38Position", "start")
+    ref = get(row, "ref", "Ref", "reference", "Reference", "grch38_ref", "GRCh38Allele")
+    alt = get(row, "alt", "Alt", "alternate", "Alternate", "variant_allele", "VariantAllele")
+    if rsid and chrom and pos and ref and alt:
+        return f"{rsid}@{chrom}-{pos}-{ref}-{alt}"
+    if direct and rsid and "@" not in direct and direct != rsid:
+        return f"{rsid}@{direct}"
+    return direct or rsid
+
+def candidate_label(row, order):
+    rank = get(row, "rank", "Rank", "candidate_rank", "CandidateRank", "priority", "Priority") or str(order)
+    allele = get(
+        row,
+        "allele",
+        "Allele",
+        "candidate",
+        "Candidate",
+        "star_allele",
+        "StarAllele",
+        "candidate_allele",
+        "CandidateAllele",
+        "haplotype_allele",
+        "HaplotypeAllele",
+    )
+    variant = variant_label(row)
+    body = allele or variant
+    if allele and variant:
+        if variant == allele or variant.startswith(f"{allele}@"):
+            body = variant
+        elif variant not in allele:
+            body = f"{allele}@{variant}"
+    if not body:
+        body = get(row, "genotype", "Genotype", "call", "Call")
+    if not body:
+        body = f"row{order}"
+    return f"{rank}:{body}", sort_rank(rank, order)
+
+def split_semicolon_list(value):
+    return [part.strip() for part in clean(value).split(";") if part.strip()]
+
+def parse_variant_data(value):
+    lookup = {}
+    for entry in split_semicolon_list(value):
+        allele, sep, rest = entry.partition(":")
+        if not sep:
+            lookup[allele] = ""
+            continue
+        variant = rest.rsplit(":", 1)[0] if ":" in rest else rest
+        lookup[allele] = variant
+    return lookup
+
+def allele_candidate(allele, variant, order):
+    body = clean(allele)
+    variant = clean(variant)
+    if variant and variant != "default":
+        if variant == body or variant.startswith(f"{body}@"):
+            body = variant
+        else:
+            body = f"{body}@{variant}"
+    elif variant == "default":
+        body = f"{body}@default"
+    return f"{order}:{body}"
+
+def alleles_zip_signatures(raw_dir):
+    signatures = {}
+    for inferred_gene, path in result_candidates(raw_dir, "alleles.zip"):
+        try:
+            with zipfile.ZipFile(path) as archive:
+                data_names = [name for name in archive.namelist() if name.endswith("/data.tsv") or name == "data.tsv"]
+                if not data_names:
+                    continue
+                with archive.open(data_names[0]) as raw_handle:
+                    text = raw_handle.read().decode("utf-8", errors="replace").splitlines()
+            reader = csv.DictReader(text, delimiter="\\t")
+            for row in reader:
+                gene = get(row, "gene", "Gene", "symbol") or inferred_gene or path.parent.name
+                variant_lookup = parse_variant_data(get(row, "VariantData", "variant_data"))
+                hap_parts = []
+                hap_bodies = []
+                top_parts = []
+                for hap_name in ("Haplotype1", "Haplotype2"):
+                    alleles = split_semicolon_list(get(row, hap_name, hap_name.lower()))
+                    body_candidates = [
+                        allele_candidate(allele, variant_lookup.get(allele, ""), index)
+                        for index, allele in enumerate(alleles, 1)
+                    ]
+                    body = "+".join(body_candidates)
+                    hap_parts.append(f"{hap_name}={body}")
+                    hap_bodies.append(body)
+                    if body_candidates:
+                        top_parts.append(f"{hap_name}={body_candidates[0]}")
+                signatures[gene] = {
+                    "top": "/".join(top_parts),
+                    "full": "/".join(hap_parts),
+                }
+        except Exception as exc:
+            gene = inferred_gene or path.parent.name
+            signatures[gene] = {
+                "top": f"parse_error:{exc}",
+                "full": f"parse_error:{exc}",
+            }
+    return signatures
+
+def long_signatures(raw_dir):
+    by_gene = defaultdict(lambda: defaultdict(list))
+    for inferred_gene, path in result_candidates(raw_dir, "results.long.tsv"):
+        try:
+            with path.open(newline="", errors="replace") as handle:
+                reader = csv.DictReader(handle, delimiter=detect_delimiter(path))
+                for order, row in enumerate(reader, 1):
+                    gene = get(row, "gene", "Gene", "symbol") or inferred_gene or path.parent.name
+                    hap = hap_label(get(row, "haplotype", "Haplotype", "phase", "Phase", "hap", "Hap"))
+                    if not hap:
+                        hap = "Haplotype1"
+                    candidate, rank = candidate_label(row, order)
+                    by_gene[gene][hap].append((rank, candidate))
+        except Exception as exc:
+            gene = inferred_gene or path.parent.name
+            by_gene[gene]["parse_error"].append(((0, ""), f"parse_error:{exc}"))
+
+    signatures = {}
+    for gene, haps in by_gene.items():
+        hap_parts = []
+        hap_bodies = []
+        top_parts = []
+        for hap, candidates in sorted(haps.items()):
+            ordered = [candidate for _rank, candidate in sorted(candidates, key=lambda item: item[0])]
+            body = "+".join(ordered)
+            hap_parts.append(f"{hap}={body}")
+            hap_bodies.append(body)
+            if ordered:
+                top_parts.append(f"{hap}={ordered[0]}")
+        signatures[gene] = {
+            "top": "/".join(top_parts),
+            "full": "/".join(hap_parts),
+        }
+    for gene, signature in alleles_zip_signatures(raw_dir).items():
+        signatures.setdefault(gene, signature)
+    return signatures
+
+def chromosome_sort_key(chromosome):
+    chrom = clean(chromosome)
+    chrom = re.sub(r"^chr", "", chrom, flags=re.IGNORECASE)
+    if chrom.isdigit():
+        return (0, int(chrom), chrom)
+    if chrom.upper() == "X":
+        return (0, 23, chrom)
+    if chrom.upper() == "Y":
+        return (0, 24, chrom)
+    if chrom.upper() in ("M", "MT"):
+        return (0, 25, chrom)
+    return (1, 0, chrom)
+
+def split_gt(gt):
+    sep = "|" if "|" in gt else "/"
+    return sep, gt.split(sep)
+
+def canonical_biallelic_gt(alleles, alt_index, sep):
+    mapped = []
+    for allele in alleles:
+        if allele == ".":
+            mapped.append(".")
+        elif allele == "0":
+            mapped.append("0")
+        elif allele == str(alt_index):
+            mapped.append("1")
+        else:
+            mapped.append("0")
+    if all(value == "." for value in mapped):
+        return "./."
+    if len(mapped) == 2 and mapped[0] == "1" and mapped[1] == "1":
+        return "1/1"
+    return sep.join(mapped)
+
+def raw_allele_tokens_from_vcf_lines(lines):
+    tokens = []
+    for line in lines:
+        if not line or line.startswith("#"):
+            continue
+        parts = line.rstrip("\\n").split("\\t")
+        if len(parts) < 10:
+            continue
+        chrom, pos, _id, ref, alt_text = parts[:5]
+        format_keys = parts[8].split(":")
+        sample_values = parts[-1].split(":")
+        try:
+            gt_index = format_keys.index("GT")
+            gt = sample_values[gt_index]
+        except (ValueError, IndexError):
+            gt = sample_values[0] if sample_values else ""
+        gt = clean(gt)
+        if not gt:
+            continue
+        if gt in ("0|0", "0/0"):
+            continue
+        sep, gt_alleles = split_gt(gt)
+        alts = [alt.strip() for alt in alt_text.split(",") if alt.strip()]
+        if not alts:
+            continue
+        if all(allele == "." for allele in gt_alleles):
+            alt_indices = range(1, len(alts) + 1)
+        else:
+            alt_indices = sorted(
+                {int(allele) for allele in gt_alleles if allele.isdigit() and int(allele) > 0}
+            )
+        for alt_index in alt_indices:
+            if alt_index > len(alts):
+                continue
+            alt = alts[alt_index - 1]
+            token_gt = canonical_biallelic_gt(gt_alleles, alt_index, sep)
+            try:
+                pos_key = int(pos)
+            except ValueError:
+                pos_key = 0
+            tokens.append((
+                chromosome_sort_key(chrom),
+                pos_key,
+                ref,
+                alt,
+                f"{chrom}:{pos}:{ref}>{alt}={token_gt}",
+            ))
+    return [token for *_sort, token in sorted(tokens, key=lambda item: item[:4])]
+
+def consolidated_raw_alleles(raw_dir):
+    raw_alleles = {}
+    for inferred_gene, path in result_candidates(raw_dir, "consolidated-variants.zip"):
+        try:
+            with zipfile.ZipFile(path) as archive:
+                data_names = [name for name in archive.namelist() if name.endswith("/data.vcf") or name == "data.vcf"]
+                if not data_names:
+                    continue
+                with archive.open(data_names[0]) as raw_handle:
+                    lines = raw_handle.read().decode("utf-8", errors="replace").splitlines()
+            gene = inferred_gene or path.parent.name
+            raw_alleles[gene] = ";".join(raw_allele_tokens_from_vcf_lines(lines))
+        except Exception as exc:
+            gene = inferred_gene or path.parent.name
+            raw_alleles[gene] = f"parse_error:{exc}"
+    return raw_alleles
+
+def stable_group_id(values):
+    joined = "\\x1f".join(clean(v) for v in values)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:12]
+
 participant_rows = []
+phase_rows = []
 errors = []
 warnings = []
 failures = []
@@ -357,6 +712,21 @@ for report_dir in sorted(Path(".").glob("pypgx_*")):
 
     rows = result_rows(report_dir)
     if not rows:
+        for mode, raw_dir in sorted(phase_raw_dirs(report_dir).items()):
+            for gene, gene_rows in rows_by_gene(raw_dir).items():
+                for gene_row in gene_rows:
+                    rows.append({
+                        "sample": "",
+                        "gene": gene,
+                        "status": gene_row["status"],
+                        "genotype": gene_row["genotype"],
+                        "phenotype": gene_row["phenotype"],
+                        "error": gene_row["error"],
+                        "source_file": f"{mode}:{raw_dir}",
+                    })
+            if rows:
+                break
+    if not rows:
         errors.append((pid, "ERROR", "no_results", f"No PyPGx results.tsv found under {report_dir}/raw"))
     for row in rows:
         gene = clean(row["gene"])
@@ -376,28 +746,32 @@ for report_dir in sorted(Path(".").glob("pypgx_*")):
             "error": error,
         })
 
+    compact_rows = {}
+    signatures = {}
+    raw_alleles_by_gene = {}
+    phase_genes = set()
+    for _mode, raw_dir in sorted(phase_raw_dirs(report_dir).items()):
+        compact_rows = rows_by_gene(raw_dir)
+        signatures = long_signatures(raw_dir)
+        raw_alleles_by_gene = consolidated_raw_alleles(raw_dir)
+        phase_genes.update(compact_rows.keys())
+        phase_genes.update(signatures.keys())
+        phase_genes.update(raw_alleles_by_gene.keys())
+        break
+    for gene in sorted(phase_genes):
+        compact = first_gene_row(compact_rows, gene)
+        signature = signatures.get(gene, {})
+        phase_rows.append({
+            "participant_id": pid,
+            "country": country,
+            "gene": gene,
+            "genotype": clean(compact.get("genotype")),
+            "phenotype": clean(compact.get("phenotype")),
+            "raw_alleles": clean(raw_alleles_by_gene.get(gene)),
+        })
+
 participant_rows.sort(key=lambda r: (r["participant_id"], r["gene"]))
-
-with open("pypgx_participant_results.tsv", "w", newline="") as handle:
-    fields = ["participant_id", "country", "gene", "status", "genotype", "phenotype", "error"]
-    writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\\t")
-    writer.writeheader()
-    writer.writerows(participant_rows)
-
-with open("pypgx_participant_possible_genotypes.tsv", "w", newline="") as handle:
-    writer = csv.writer(handle, delimiter="\\t")
-    writer.writerow(["participant_id", "country", "gene", "possible_genotypes"])
-    for row in participant_rows:
-        if row["genotype"]:
-            writer.writerow([row["participant_id"], row["country"], row["gene"], row["genotype"]])
-
-with open("pypgx_participant_possible_genotypes_normalized.tsv", "w", newline="") as handle:
-    writer = csv.writer(handle, delimiter="\\t")
-    writer.writerow(["participant_id", "country", "gene", "possible_genotypes"])
-    for row in participant_rows:
-        if row["genotype"]:
-            genotype = re.sub(r"\\s*\\([^)]*\\)", "", row["genotype"]).strip()
-            writer.writerow([row["participant_id"], row["country"], row["gene"], genotype])
+phase_rows.sort(key=lambda r: (r["participant_id"], r["gene"]))
 
 summary_counts = Counter()
 summary_samples = set()
@@ -414,6 +788,74 @@ with open("pypgx_country_summary.tsv", "w", newline="") as handle:
     for (country, gene, genotype, phenotype), count in sorted(summary_counts.items()):
         d = summary_denom[(country, gene)]
         writer.writerow([country, gene, genotype, phenotype, count, d, f"{(count / d) if d else 0:.6f}"])
+
+phase_detail_fields = [
+    "participant_id",
+    "country",
+    "gene",
+    "genotype",
+    "phenotype",
+    "raw_alleles",
+]
+with open("pypgx_participant_results.tsv", "w", newline="") as handle:
+    writer = csv.DictWriter(handle, fieldnames=phase_detail_fields, delimiter="\\t")
+    writer.writeheader()
+    writer.writerows(phase_rows)
+
+phase_group_key_fields = [
+    "country",
+    "gene",
+    "genotype",
+    "phenotype",
+    "raw_alleles",
+]
+grouped = {}
+for row in phase_rows:
+    key = tuple(row[field] for field in phase_group_key_fields)
+    if key not in grouped:
+        grouped[key] = {"row": row, "participants": set()}
+    grouped[key]["participants"].add(row["participant_id"])
+phase_summary_samples = set(
+    (row["country"], row["gene"], row["participant_id"])
+    for row in phase_rows
+    if row["genotype"]
+)
+phase_summary_denom = Counter((country, gene) for country, gene, _pid in phase_summary_samples)
+
+phase_aggregate_fields = [
+    "country",
+    "gene",
+    "genotype",
+    "phenotype",
+    "count",
+    "sample_count",
+    "frequency",
+    "group_id",
+    "raw_alleles",
+]
+aggregate_rows = []
+for key, payload in grouped.items():
+    row = payload["row"]
+    group_id = stable_group_id(key)
+    count = len(payload["participants"])
+    sample_count = phase_summary_denom[(row["country"], row["gene"])]
+    aggregate_rows.append({
+        "country": row["country"],
+        "gene": row["gene"],
+        "genotype": row["genotype"],
+        "phenotype": row["phenotype"],
+        "count": count,
+        "sample_count": sample_count,
+        "frequency": f"{(count / sample_count) if sample_count else 0:.6f}",
+        "group_id": group_id,
+        "raw_alleles": row["raw_alleles"],
+    })
+aggregate_rows.sort(key=lambda r: (r["country"], r["gene"], r["genotype"], r["phenotype"], r["group_id"]))
+
+with open("phase_reclassification_groups_aggregate.csv", "w", newline="") as handle:
+    writer = csv.DictWriter(handle, fieldnames=phase_aggregate_fields)
+    writer.writeheader()
+    writer.writerows(aggregate_rows)
 
 # Mark down any expected participant that never produced a report (dropped in
 # prepare_vcf, or an uncatchable OOM SIGKILL in pypgx_rs_pipeline).
@@ -453,6 +895,8 @@ with open("pypgx_pipeline.log", "w") as handle:
     handle.write(f"failed_participants={len(failures)}\\n")
     handle.write(f"participants={len(set(r['participant_id'] for r in participant_rows))}\\n")
     handle.write(f"participant_rows={len(participant_rows)}\\n")
+    handle.write(f"phase_reclassification_rows={len(phase_rows)}\\n")
+    handle.write(f"phase_reclassification_groups={len(aggregate_rows)}\\n")
     handle.write(f"errors={len(errors)}\\n")
 
 if failures:

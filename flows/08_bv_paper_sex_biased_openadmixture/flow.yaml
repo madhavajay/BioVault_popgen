@@ -28,4 +28,3 @@ spec:
         openadmixture_q_files: File(openadmixture_*.Q)
         openadmixture_p_files: File(openadmixture_*.P)
         openadmixture_logs: File(openadmixture_*.log)
-        plink_bed_archive: File(plink_bed.tar.gz)

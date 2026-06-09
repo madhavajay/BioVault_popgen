@@ -1,0 +1,77 @@
+version: 1
+description: >-
+  Baked HGP1K ADMIXTURE reference for the sex-biased admixture flow:
+  3202 1000 Genomes samples (AFR:893, AMR:490, EAS:585, EUR:633, SAS:601),
+  PLINK BED keyed by chr:pos, pre-split into autosomes (reference_auto)
+  and X (reference_x, sex-coded for male haploid handling). Reassemble
+  into .docker/reference/hgp1k_admixture/ or another reference directory
+  to bake/use the image without the raw 1KGP VCFs (not in CI).
+hash_algo: sha256
+shard_size: "95m"
+archive_format: tar.gz
+selection:
+  source_ped: 20130606_g1k_3202_samples_ped_population.txt
+  policy: all 1KGP samples from AFR, AMR, EAS, EUR, SAS, including related samples
+  seed: 42
+  per_superpop:
+    AFR: 893
+    AMR: 490
+    EAS: 585
+    EUR: 633
+    SAS: 601
+  sample_list: reference_samples.tsv  # sample_id, superpopulation, population, sex
+  per_population:
+    AFR_ACB: 116
+    AFR_ASW: 74
+    AFR_ESN: 149
+    AFR_GWD: 178
+    AFR_LWK: 99
+    AFR_MSL: 99
+    AFR_YRI: 178
+    AMR_CLM: 132
+    AMR_MXL: 97
+    AMR_PEL: 122
+    AMR_PUR: 139
+    EAS_CDX: 93
+    EAS_CHB: 103
+    EAS_CHS: 163
+    EAS_JPT: 104
+    EAS_KHV: 122
+    EUR_CEU: 179
+    EUR_FIN: 99
+    EUR_GBR: 91
+    EUR_IBS: 157
+    EUR_TSI: 107
+    SAS_BEB: 131
+    SAS_GIH: 103
+    SAS_ITU: 107
+    SAS_PJL: 146
+    SAS_STU: 114
+reference:
+  reference_auto:  605544 SNPs
+  reference_x:     24467 SNPs
+archive:
+  name: hgp1k_all_sex_bias.tar.gz
+  size_bytes: 188741021
+  sha256: 4a6c0c9fcbef2867d2d392f56d5c49ed49b71563e4cb2c3b56723fd04fde38a1
+  contents:
+    - reference_auto.bed
+    - reference_auto.bim
+    - reference_auto.fam
+    - reference_x.bed
+    - reference_x.bim
+    - reference_x.fam
+    - reference_labels.tsv
+    - reference_samples.tsv
+    - build_manifest.txt
+  shards:
+    - name: hgp1k_all_sex_bias.tar.gz.aa
+      size_bytes: 99614720
+      sha256: 1411a14acb9e53d23c63eeac774f4bb28074a075c33e7d058df275aa848b2998
+    - name: hgp1k_all_sex_bias.tar.gz.ab
+      size_bytes: 89126301
+      sha256: 8b17068538c98107c3ca179e6a4a891763bf36a4edfb4c55d31c0c70a6969fac
+instructions:
+  reassemble: cat hgp1k_all_sex_bias.tar.gz.* > hgp1k_all_sex_bias.tar.gz
+  extract: tar xzf hgp1k_all_sex_bias.tar.gz -C <dest_dir>
+  helper: flows/03_bv_paper_sex_biased_admixture_hgp1k/reference/reassemble_reference.sh

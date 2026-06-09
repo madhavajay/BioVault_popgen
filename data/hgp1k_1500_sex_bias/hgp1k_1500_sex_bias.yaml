@@ -1,0 +1,74 @@
+version: 1
+description: >-
+  Baked HGP1K ADMIXTURE reference for the sex-biased admixture flow:
+  1500 1000 Genomes samples (AFR:300, AMR:300, EAS:300, EUR:300, SAS:300),
+  PLINK BED keyed by chr:pos, pre-split into autosomes (reference_auto)
+  and X (reference_x, sex-coded for male haploid handling). Reassemble
+  into .docker/reference/hgp1k_admixture/ or another reference directory
+  to bake/use the image without the raw 1KGP VCFs (not in CI).
+hash_algo: b3sum
+shard_size: "95m"
+archive_format: tar.gz
+selection:
+  source_ped: 20130606_g1k_3202_samples_ped_population.txt
+  policy: 300 unrelated founders per superpopulation (AFR, AMR, EAS, EUR, SAS), DDNA-locus filtered VCF panel
+  seed: 42
+  per_superpop:
+    AFR: 300
+    AMR: 300
+    EAS: 300
+    EUR: 300
+    SAS: 300
+  sample_list: reference_samples.tsv  # sample_id, superpopulation, population, sex
+  per_population:
+    AFR_ACB: 40
+    AFR_ASW: 23
+    AFR_ESN: 40
+    AFR_GWD: 60
+    AFR_LWK: 43
+    AFR_MSL: 42
+    AFR_YRI: 52
+    AMR_CLM: 84
+    AMR_MXL: 53
+    AMR_PEL: 74
+    AMR_PUR: 89
+    EAS_CDX: 53
+    EAS_CHB: 63
+    EAS_CHS: 65
+    EAS_JPT: 60
+    EAS_KHV: 59
+    EUR_CEU: 74
+    EUR_FIN: 49
+    EUR_GBR: 56
+    EUR_IBS: 68
+    EUR_TSI: 53
+    SAS_BEB: 57
+    SAS_GIH: 64
+    SAS_ITU: 64
+    SAS_PJL: 59
+    SAS_STU: 56
+reference:
+  reference_auto:  605544 SNPs
+  reference_x:     24467 SNPs
+archive:
+  name: hgp1k_1500_sex_bias.tar.gz
+  size_bytes: 94474240
+  b3sum: ad1c8a1da2bc2abf50656cf32280f1e9abadd8d29a121faf1c1289d81c987aec
+  contents:
+    - reference_auto.bed
+    - reference_auto.bim
+    - reference_auto.fam
+    - reference_x.bed
+    - reference_x.bim
+    - reference_x.fam
+    - reference_labels.tsv
+    - reference_samples.tsv
+    - build_manifest.txt
+  shards:
+    - name: hgp1k_1500_sex_bias.tar.gz.aa
+      size_bytes: 94474240
+      b3sum: ad1c8a1da2bc2abf50656cf32280f1e9abadd8d29a121faf1c1289d81c987aec
+instructions:
+  reassemble: cat hgp1k_1500_sex_bias.tar.gz.* > hgp1k_1500_sex_bias.tar.gz
+  extract: tar xzf hgp1k_1500_sex_bias.tar.gz -C <dest_dir>
+  helper: flows/03_bv_paper_sex_biased_admixture_hgp1k/reference/reassemble_reference.sh

@@ -1,18 +1,18 @@
 // BioVault popgen: HGP1K-anchored sex-biased OpenADMIXTURE.
 //
 // Joint OpenADMIXTURE of the study cohort + a baked 1000 Genomes reference
-// (AFR/EUR/SAS) at K=5, run on the combined genome and separately on
-// autosomes vs X to detect sex-biased admixture (a component over-represented
-// on X). The `sex` participant facet is materialized into sex_mapping.tsv and
-// applied (plink2 --update-sex) so male X is encoded haploid — sex is NEVER
-// inferred from the data.
+// (AFR/AMR/EAS/EUR/SAS) at K=5. Because OpenADMIXTURE has no ADMIXTURE-style
+// --haploid option, the all-sample headline run is autosome-only, and the
+// autosome-vs-X sex-bias comparison uses matched female-only study/reference
+// samples. The `sex` participant facet is materialized into sex_mapping.tsv;
+// sex is NEVER inferred from the data.
 //
 // Two stages:
 //   cohort_bed            (biosynth)             bvs cohort-bed -> study_raw PLINK BED
 //   hgp1k_openadmixture   (openadmixture.jl)     merge w/ baked reference, QC+LD-prune
-//                                                autosomes & X, OpenADMIXTURE, X-vs-auto.
-// The OpenADMIXTURE image supplies the Julia runner and PLINK tools. This flow
-// stages the BioVault analysis script and HGP1K reference directory explicitly.
+//                                                all-auto and female-only auto/X.
+// The BioVault OpenADMIXTURE image supplies the Julia runner, PLINK tools, and
+// a baked HGP1K reference directory.
 
 nextflow.enable.dsl=2
 
@@ -21,7 +21,7 @@ if (!params.containsKey('biosynth_image'))  { params.biosynth_image  = null }
 if (!params.containsKey('hgp1k_admixture_ref')) { params.hgp1k_admixture_ref = null }
 
 def BIOSYNTH_IMAGE        = System.getenv('BIOSYNTH_IMAGE') ?: (params.biosynth_image ?: 'ghcr.io/openmined/biosynth:0.1.32')
-def OPENADMIXTURE_IMAGE   = params.openadmixture_image ?: 'ghcr.io/madhavajay/openadmixture.jl:latest'
+def OPENADMIXTURE_IMAGE   = params.openadmixture_image ?: 'ghcr.io/madhavajay/biovault-openadmixture:latest'
 
 def normalizeSex(String raw) { return (raw ?: '').trim() }
 
@@ -60,7 +60,7 @@ workflow USER {
             }
 
         def analysis_script = file("${projectDir}/scripts/hgp1k_openadmixture.py")
-        def reference_dir = file(params.hgp1k_admixture_ref ?: "${projectDir}/../../.docker/reference/hgp1k_admixture")
+        def reference_dir = params.hgp1k_admixture_ref ?: '/opt/biovault/reference/hgp1k_admixture'
 
         def bed = cohort_bed(collected)
         def result = hgp1k_openadmixture(bed.bed_dir, bed.sex_mapping, analysis_script, reference_dir)
@@ -78,14 +78,11 @@ workflow USER {
         openadmixture_q_files     = result.q_files
         openadmixture_p_files     = result.p_files
         openadmixture_logs        = result.adx_logs
-        plink_bed                = bed.bed_dir
-        plink_bed_archive        = bed.bed_archive
 }
 
 process cohort_bed {
     container BIOSYNTH_IMAGE
     containerOptions '--entrypoint=""'
-    publishDir params.results_dir, mode: 'copy', overwrite: true
     stageInMode 'symlink'
     errorStrategy { params.nextflow.error_strategy }
     maxRetries { params.nextflow.max_retries }
@@ -95,7 +92,6 @@ process cohort_bed {
 
     output:
         path "plink_bed",          emit: bed_dir
-        path "plink_bed.tar.gz",   emit: bed_archive
         path "sex_mapping.tsv",    emit: sex_mapping
 
     script:
@@ -109,13 +105,13 @@ process cohort_bed {
     def sexText = sexRows.join('\\n')
     """
     set -euo pipefail
+    echo "[bv] cohort_bed: building PLINK BED for ${participant_ids.size()} participants with sex facets"
     mkdir -p input plink_bed
     ${staging.join('\n    ')}
     { printf 'participant_id\\tsex\\n'; printf '%b\\n' "${sexText}"; } > sex_mapping.tsv
     bvs cohort-bed -i input \\
         --out-prefix plink_bed/genotypes \\
         --snp-info plink_bed/snp_info.tsv
-    tar -czf plink_bed.tar.gz plink_bed
     """
 }
 
@@ -131,7 +127,7 @@ process hgp1k_openadmixture {
         path bed_dir
         path sex_mapping
         path analysis_script
-        path reference_dir
+        val reference_dir
 
     output:
         path "sex_bias_x_vs_auto.tsv",          emit: sex_bias
@@ -160,9 +156,13 @@ process hgp1k_openadmixture {
         echo "biovault:x:\${GROUP_ID}:" >> /etc/group
     fi
     export HOME=/tmp
+    export JULIA_DEPOT_PATH="\${JULIA_DEPOT_PATH:-/tmp/.julia:/opt/julia-depot:/root/.julia}"
 
     mkdir -p sex_biased_openadmixture_hgp1k/scripts
     cp "${analysis_script}" sex_biased_openadmixture_hgp1k/scripts/hgp1k_openadmixture.py
+    echo "[bv] hgp1k_openadmixture: study BED=${bed_dir}/genotypes"
+    echo "[bv] hgp1k_openadmixture: reference=${reference_dir}"
+    echo "[bv] hgp1k_openadmixture: K=\${BV_OPENADMIXTURE_K:-5} threads=\${BV_THREADS:-8}"
 
     python3 sex_biased_openadmixture_hgp1k/scripts/hgp1k_openadmixture.py \\
         --study-bed "${bed_dir}/genotypes" \\

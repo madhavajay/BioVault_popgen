@@ -1,0 +1,84 @@
+name: build-biovault-openadmixture
+
+# Builds the BioVault OpenADMIXTURE image by layering the real all-sample
+# DDNA-locus HGP1K reference package over ghcr.io/madhavajay/openadmixture.jl.
+# The PGP-filtered test package is intentionally not used in CI;
+# build_openadmixture_docker.sh only selects it when --pgp is passed.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docker/openadmixture/Dockerfile
+      - build_openadmixture_docker.sh
+      - "data/hgp1k_all_sex_bias/**"
+      - "flows/08_bv_paper_sex_biased_openadmixture/**"
+      - "flows/03_bv_paper_sex_biased_admixture_hgp1k/reference/reassemble_reference.sh"
+      - .github/workflows/build-biovault-openadmixture.yml
+  workflow_dispatch: {}
+
+concurrency:
+  group: build-biovault-openadmixture-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/biovault-openadmixture
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL || true
+          docker system prune -af || true
+          df -h /
+
+      - name: Verify real all-sample HGP1K OpenADMIXTURE reference shards
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          shards=(data/hgp1k_all_sex_bias/hgp1k_all_sex_bias.tar.gz.*)
+          if [ "${#shards[@]}" -eq 0 ]; then
+            echo "::error::no real all-sample HGP1K reference shards in data/hgp1k_all_sex_bias/"
+            echo "::error::PGP shards are test data and are not used by CI."
+            exit 1
+          fi
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push OpenADMIXTURE image with real reference
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          PACKAGE_NAME: hgp1k_all_sex_bias
+          FLAVOR: ddnaall
+          PLATFORM: linux/amd64
+          PUSH: "1"
+        run: bash build_openadmixture_docker.sh --push
+
+      - name: Tag + push sha image
+        run: |
+          set -euo pipefail
+          S="sha-$(echo "${{ github.sha }}" | cut -c1-12)"
+          docker tag "${IMAGE_NAME}:ddnaall-amd64" "${IMAGE_NAME}:${S}-amd64"
+          docker push "${IMAGE_NAME}:${S}-amd64"
+          echo "Published:"
+          echo "  ${IMAGE_NAME}:ddnaall-amd64"
+          echo "  ${IMAGE_NAME}:ddnaall"
+          echo "  ${IMAGE_NAME}:latest-amd64"
+          echo "  ${IMAGE_NAME}:latest"
+          echo "  ${IMAGE_NAME}:${S}-amd64"

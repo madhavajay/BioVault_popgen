@@ -14,7 +14,9 @@ spec:
       with:
         participants: inputs.samplesheet
       publish:
+        participant_results: File(pypgx_participant_results.tsv)
         country_summary: File(pypgx_country_summary.tsv)
+        phase_reclassification_groups_aggregate: File(phase_reclassification_groups_aggregate.csv)
         failures: File(pypgx_failures.tsv)
         errors: File(errors.tsv)
         warnings: File(warnings.tsv)
