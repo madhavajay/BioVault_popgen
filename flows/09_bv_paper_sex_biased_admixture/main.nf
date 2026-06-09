@@ -60,11 +60,10 @@ workflow USER {
                 )
             }
 
-        def analysis_script = file("${projectDir}/scripts/hgp1k_admixture.py")
         def reference_dir = params.hgp1k_admixture_ref ?: '/opt/biovault/reference/hgp1k_admixture'
 
         def bed = cohort_bed(collected)
-        def result = hgp1k_admixture(bed.bed_dir, bed.sex_mapping, analysis_script, reference_dir)
+        def result = hgp1k_admixture(bed.bed_dir, bed.sex_mapping, reference_dir)
 
     emit:
         sex_bias_x_vs_auto       = result.sex_bias
@@ -127,7 +126,6 @@ process hgp1k_admixture {
     input:
         path bed_dir
         path sex_mapping
-        path analysis_script
         val reference_dir
 
     output:
@@ -158,7 +156,7 @@ process hgp1k_admixture {
     fi
     export HOME=/tmp
     mkdir -p sex_biased_admixture_hgp1k/scripts
-    cp "${analysis_script}" sex_biased_admixture_hgp1k/scripts/hgp1k_admixture.py
+    cp /opt/biovault/scripts/sex_biased_admixture_hgp1k/hgp1k_admixture.py sex_biased_admixture_hgp1k/scripts/
     echo "[bv] hgp1k_admixture: study BED=${bed_dir}/genotypes"
     echo "[bv] hgp1k_admixture: reference=${reference_dir}"
     echo "[bv] hgp1k_admixture: K=\${BV_ADMIXTURE_K:-5} threads=\${BV_THREADS:-8}"

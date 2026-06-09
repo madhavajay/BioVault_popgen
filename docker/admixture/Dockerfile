@@ -28,9 +28,9 @@ RUN mkdir -p /opt/admixture && \
     rm -f /tmp/admixture.tar.gz && \
     (admixture 2>&1 || true) | grep -q "ADMIXTURE Version ${ADMIXTURE_VERSION}"
 
-# Baked analysis scripts (find_k kept for back-compat; hgp1k is the new flow).
+# Baked analysis scripts (find_k kept for back-compat; hgp1k is the current flow script).
 COPY 03_individual_level/sex_biased_admixture_find_k/scripts /opt/biovault/scripts/sex_biased_admixture_find_k
-COPY 03_individual_level/sex_biased_admixture_hgp1k/scripts  /opt/biovault/scripts/sex_biased_admixture_hgp1k
+COPY flows/09_bv_paper_sex_biased_admixture/scripts        /opt/biovault/scripts/sex_biased_admixture_hgp1k
 
 ENV PATH=/opt/conda/bin:${PATH}
 ENV HGP1K_ADMIXTURE_REF=/opt/biovault/reference/hgp1k_admixture
