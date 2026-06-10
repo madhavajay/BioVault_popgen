@@ -2,7 +2,7 @@ apiVersion: syftbox.openmined.org/v1alpha1
 kind: Flow
 metadata:
   name: 07_pypgx_rs
-  version: 0.2.5
+  version: 0.2.6
 spec:
   inputs:
     samplesheet:

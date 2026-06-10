@@ -24,7 +24,7 @@ if (!params.containsKey('pypgx_assembly')) {
 
 def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.32'
 def PYPGX_RS_IMAGE = params.pypgx_rs_image ?: 'ghcr.io/madhavajay/pypgx-rs:v0.26.0-rs.1'
-def POPGEN_IMAGE = System.getenv('POPGEN_IMAGE') ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.5-fast'
+def POPGEN_IMAGE = System.getenv('POPGEN_IMAGE') ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.6-fast'
 
 def normalizeFacet(String raw) {
     return (raw ?: '').trim()
@@ -114,7 +114,7 @@ process prepare_vcf {
     lower="\$(printf '%s' "\${input_name}" | tr '[:upper:]' '[:lower:]')"
     case "\${lower}" in
         *.vcf)
-            cp "\${input_name}" ${shellQuote("${prefix}/vcf/${prefix}.vcf")}
+            gzip -c "\${input_name}" > ${shellQuote("${prefix}/vcf/${prefix}.vcf.gz")}
             ;;
         *.vcf.gz|*.vcf.bgz|*.bgz)
             cp "\${input_name}" ${shellQuote("${prefix}/vcf/${prefix}.vcf.gz")}
@@ -179,14 +179,15 @@ process pypgx_rs_pipeline {
         fi
         case "\${input_name}" in
             *.gz|*.bgz)
-                gzip -dc "\${input_name}" > input.raw.vcf
+                read_vcf='gzip -dc'
                 ;;
             *)
-                cat "\${input_name}" > input.raw.vcf
+                read_vcf='cat'
                 ;;
         esac
+        \${read_vcf} "\${input_name}" | awk '/^#/ { print > "input.header.vcf" }'
         awk '
-            /^#/ { print > "input.header.vcf"; next }
+            /^#/ { next }
             {
                 chrom = \$1
                 sub(/^chr/, "", chrom)
@@ -199,10 +200,10 @@ process pypgx_rs_pipeline {
                 if (rank < 1 || rank > 25) next
                 print rank "\\t" \$2 "\\t" \$0
             }
-        ' input.raw.vcf \\
+        ' < <(\${read_vcf} "\${input_name}") \\
             | sort -t \$'\\t' -k1,1n -k2,2n \\
-            | cut -f3- > input.records.vcf
-        cat input.header.vcf input.records.vcf | bgzip -c > input.vcf.gz
+            | cut -f3- \\
+            | { cat input.header.vcf - | bgzip -c > input.vcf.gz; }
         tabix -f -p vcf input.vcf.gz
 
         pypgx run-ngs-pipeline \\
