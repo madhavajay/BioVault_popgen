@@ -1,0 +1,52 @@
+FROM ubuntu:24.04
+
+ARG BCFTOOLS_VERSION=1.20
+ARG GTC2VCF_REF=master
+
+SHELL ["/bin/bash", "-lc"]
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV BCFTOOLS_PLUGINS=/opt/gtc2vcf/plugins
+ENV PATH=/opt/gtc2vcf/bin:$PATH
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      bash \
+      bzip2 \
+      ca-certificates \
+      g++ \
+      gcc \
+      libbz2-dev \
+      libcurl4-openssl-dev \
+      libdeflate-dev \
+      libgsl-dev \
+      liblzma-dev \
+      libssl-dev \
+      make \
+      samtools \
+      wget \
+      zlib1g-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+RUN wget -q "https://github.com/samtools/bcftools/releases/download/${BCFTOOLS_VERSION}/bcftools-${BCFTOOLS_VERSION}.tar.bz2" && \
+    tar -xjf "bcftools-${BCFTOOLS_VERSION}.tar.bz2"
+
+WORKDIR /build/bcftools-${BCFTOOLS_VERSION}
+
+RUN rm -f plugins/idat2gtc.c plugins/gtc2vcf.c plugins/gtc2vcf.h plugins/affy2vcf.c plugins/BAFregress.c && \
+    wget -q -P plugins \
+      "https://raw.githubusercontent.com/freeseek/gtc2vcf/${GTC2VCF_REF}/idat2gtc.c" \
+      "https://raw.githubusercontent.com/freeseek/gtc2vcf/${GTC2VCF_REF}/gtc2vcf.c" \
+      "https://raw.githubusercontent.com/freeseek/gtc2vcf/${GTC2VCF_REF}/gtc2vcf.h" \
+      "https://raw.githubusercontent.com/freeseek/gtc2vcf/${GTC2VCF_REF}/affy2vcf.c" \
+      "https://raw.githubusercontent.com/freeseek/gtc2vcf/${GTC2VCF_REF}/BAFregress.c" && \
+    make -j"$(nproc)" && \
+    mkdir -p /opt/gtc2vcf/bin /opt/gtc2vcf/plugins && \
+    cp bcftools /opt/gtc2vcf/bin/ && \
+    cp plugins/idat2gtc.so plugins/gtc2vcf.so plugins/affy2vcf.so plugins/BAFregress.so /opt/gtc2vcf/plugins/
+
+WORKDIR /work
+
+CMD ["bcftools", "+gtc2vcf", "--help"]
