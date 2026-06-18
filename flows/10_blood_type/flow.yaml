@@ -1,0 +1,26 @@
+apiVersion: syftbox.openmined.org/v1alpha1
+kind: Flow
+metadata:
+  name: 10_blood_type
+  version: 0.2.6
+spec:
+  inputs:
+    samplesheet:
+      type: List[GenotypeRecord]
+      description: Genotype samplesheet with participant_id, genotype_file, and country facet columns.
+      required_facets:
+        - country
+  steps:
+    - id: blood_type
+      uses: ./
+      with:
+        participants: inputs.samplesheet
+      publish:
+        participant_reports: Directory(participants)
+        country_aggregates: Directory(countries)
+        observations: File(observations.tsv)
+        reports: File(reports.jsonl)
+        analysis: File(analysis.jsonl)
+        participant_analysis: File(blood_type_participant_analysis.tsv)
+        country_analysis_counts: File(blood_type_country_analysis_counts.tsv)
+        country_variant_counts: File(blood_type_country_variant_counts.tsv)

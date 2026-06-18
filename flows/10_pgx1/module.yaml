@@ -1,0 +1,86 @@
+apiVersion: syftbox.openmined.org/v1alpha1
+kind: Module
+metadata:
+  name: 10_pgx1
+  version: 0.2.6
+  authors:
+    - madhava@openmined.org
+  description: |
+    ExVitae PGX-1 report flow. Each genotype file is processed with
+    ghcr.io/madhavajay/exvitae:0.2.4 via `exvitae-report pgx-1`, then
+    per-participant reports and country-grouped aggregates are published.
+spec:
+  runner:
+    kind: nextflow
+    entrypoint: main.nf
+    template: dynamic-nextflow
+    image: ghcr.io/madhavajay/exvitae:0.2.4
+  inputs:
+    - name: participants
+      type: List[GenotypeRecord]
+      description: >
+        CSV/TSV with participant_id, genotype_file, and country facet columns.
+      required_facets:
+        - country
+      format:
+        kind: csv
+        mapping:
+          participant_id: participant_id
+          genotype_file: genotype_file
+          country: country
+  outputs:
+    - name: participant_reports
+      type: Directory
+      description: Per-participant ExVitae report directories, each containing raw report files and any rendered report assets.
+      path: participants
+    - name: country_aggregates
+      type: Directory
+      description: Per-country aggregate directories with participants/, observations.tsv, reports.jsonl, and analysis.jsonl.
+      path: countries
+    - name: observations
+      type: File
+      description: Cohort-level variant observation rows emitted by ExVitae.
+      format:
+        kind: tsv
+      path: observations.tsv
+    - name: reports
+      type: File
+      description: Cohort-level report records emitted by ExVitae.
+      format:
+        kind: jsonl
+      path: reports.jsonl
+    - name: analysis
+      type: File
+      description: Cohort-level analysis records emitted by ExVitae.
+      format:
+        kind: jsonl
+      path: analysis.jsonl
+    - name: participant_analysis
+      type: File
+      description: Participant-level primary ExVitae analysis values with country facets and an optional result_scope such as blood-group system.
+      format:
+        kind: tsv
+      path: pgx1_participant_analysis.tsv
+    - name: country_analysis_counts
+      type: File
+      description: Counts grouped by country, assay, analysis, result scope, result key, and result value; sample_count is the matching country/assay/analysis/scope/key denominator and frequency is count/sample_count.
+      format:
+        kind: tsv
+      path: pgx1_country_analysis_counts.tsv
+    - name: country_variant_counts
+      type: File
+      description: Counts grouped by country, assay, variant, observed genotype display, and outcome; sample_count is the country/assay/variant denominator and frequency is count/sample_count.
+      format:
+        kind: tsv
+      path: pgx1_country_variant_counts.tsv
+  parameters:
+    - name: exvitae_image
+      type: String
+      description: Optional Docker image override for ExVitae.
+      required: false
+    - name: analysis_max_duration_ms
+      type: String
+      default: "120000"
+      description: Per-analysis timeout passed to exvitae-report.
+      required: false
+  assets: []
