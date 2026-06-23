@@ -9,7 +9,7 @@ if (!params.containsKey('analysis_max_duration_ms')) {
     params.analysis_max_duration_ms = '30000'
 }
 
-def EXVITAE_CONTAINER = System.getenv('EXVITAE_IMAGE') ?: (params.exvitae_image ?: 'ghcr.io/madhavajay/exvitae:0.2.4')
+def EXVITAE_CONTAINER = System.getenv('EXVITAE_IMAGE') ?: (params.exvitae_image ?: 'ghcr.io/madhavajay/exvitae:0.2.7')
 def ASSAY_ID = 'apol1'
 def OUTPUT_PREFIX = 'apol1'
 def NF_PARAMS = (params.containsKey('nextflow') && params.nextflow) ? params.nextflow : [error_strategy: 'terminate', max_retries: 0]

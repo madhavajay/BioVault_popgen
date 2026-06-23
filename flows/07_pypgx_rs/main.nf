@@ -24,7 +24,7 @@ if (!params.containsKey('pypgx_assembly')) {
 
 def BIOSYNTH_IMAGE = System.getenv('BIOSYNTH_IMAGE') ?: 'ghcr.io/openmined/biosynth:0.1.32'
 def PYPGX_RS_IMAGE = params.pypgx_rs_image ?: 'ghcr.io/madhavajay/pypgx-rs:v0.26.0-rs.1'
-def POPGEN_IMAGE = System.getenv('POPGEN_IMAGE') ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.6-fast'
+def POPGEN_IMAGE = System.getenv('POPGEN_IMAGE') ?: 'ghcr.io/madhavajay/biovault-popgen:0.2.7-fast'
 
 def normalizeFacet(String raw) {
     return (raw ?: '').trim()

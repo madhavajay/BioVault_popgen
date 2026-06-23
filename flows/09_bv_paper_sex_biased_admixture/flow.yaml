@@ -2,7 +2,7 @@ apiVersion: syftbox.openmined.org/v1alpha1
 kind: Flow
 metadata:
   name: 09_bv_paper_sex_biased_admixture
-  version: 0.2.6
+  version: 0.2.7
 spec:
   inputs:
     samplesheet:

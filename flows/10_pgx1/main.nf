@@ -9,7 +9,7 @@ if (!params.containsKey('analysis_max_duration_ms')) {
     params.analysis_max_duration_ms = '120000'
 }
 
-def EXVITAE_CONTAINER = System.getenv('EXVITAE_IMAGE') ?: (params.exvitae_image ?: 'ghcr.io/madhavajay/exvitae:0.2.4')
+def EXVITAE_CONTAINER = System.getenv('EXVITAE_IMAGE') ?: (params.exvitae_image ?: 'ghcr.io/madhavajay/exvitae:0.2.7')
 def ASSAY_ID = 'pgx-1'
 def OUTPUT_PREFIX = 'pgx1'
 def NF_PARAMS = (params.containsKey('nextflow') && params.nextflow) ? params.nextflow : [error_strategy: 'terminate', max_retries: 0]
@@ -108,58 +108,11 @@ process exvitae_report {
     set -euo pipefail
     mkdir -p ${shellQuote(prefix)}
     report_input="\${PWD}/${inputName}"
-    lower="\$(printf '%s' ${shellQuote(inputName)} | tr '[:upper:]' '[:lower:]')"
-    case "\${lower}" in
-        *.gz|*.bgz)
-            INPUT_PATH="\${PWD}/${inputName}" \\
-            OUTPUT_DIR=${shellQuote(prefix)} \\
-            ASSAY_ID=${shellQuote(ASSAY_ID)} \\
-            ANALYSIS_MAX_DURATION_MS=${shellQuote(params.analysis_max_duration_ms)} \\
-            python3 - <<'PY'
-import gzip
-import os
-import shutil
-import subprocess
-import sys
-
-input_path = os.environ["INPUT_PATH"]
-output_dir = os.environ["OUTPUT_DIR"]
-assay_id = os.environ["ASSAY_ID"]
-analysis_max_duration_ms = os.environ["ANALYSIS_MAX_DURATION_MS"]
-
-fd = os.memfd_create("exvitae-decompressed-input", 0)
-try:
-    with gzip.open(input_path, "rb") as src:
-        with os.fdopen(os.dup(fd), "wb", closefd=True) as dst:
-            shutil.copyfileobj(src, dst, length=1024 * 1024)
-    os.lseek(fd, 0, os.SEEK_SET)
-    result = subprocess.run(
-        [
-            "exvitae-report",
-            assay_id,
-            "--input-file",
-            f"/proc/self/fd/{fd}",
-            "--output-dir",
-            output_dir,
-            "--detect-sex",
-            "--analysis-max-duration-ms",
-            analysis_max_duration_ms,
-        ],
-        pass_fds=(fd,),
-    )
-    sys.exit(result.returncode)
-finally:
-    os.close(fd)
-PY
-            ;;
-        *)
-            exvitae-report ${shellQuote(ASSAY_ID)} \\
-              --input-file "\${report_input}" \\
-              --output-dir ${shellQuote(prefix)} \\
-              --detect-sex \\
-              --analysis-max-duration-ms ${params.analysis_max_duration_ms}
-            ;;
-    esac
+    exvitae-report ${shellQuote(ASSAY_ID)} \\
+      --input-file "\${report_input}" \\
+      --output-dir ${shellQuote(prefix)} \\
+      --detect-sex \\
+      --analysis-max-duration-ms ${params.analysis_max_duration_ms}
     { printf 'participant_id\\tcountry\\n'; printf '%s\\t%s\\n' ${shellQuote(participant_id)} ${shellQuote(country)}; } \\
       > ${shellQuote("${prefix}/metadata.tsv")}
     """
@@ -236,6 +189,20 @@ def primary_analysis_values(row, emitted_keys):
     blood_type = scalar(row.get("blood_type")).strip()
     phenotype = scalar(row.get("phenotype")).strip()
     hla_proxy_key = scalar(row.get("hla_proxy_key")).strip()
+    condition = scalar(row.get("condition")).strip()
+    drug = scalar(row.get("drug")).strip()
+    genotype = scalar(row.get("genotype")).strip()
+    hla_allele = scalar(row.get("hla_allele")).strip()
+    hla_proxy_status = scalar(row.get("hla_proxy_status")).strip()
+    interpretation = scalar(row.get("interpretation")).strip()
+    rsid = scalar(row.get("rsid")).strip()
+    if condition or drug:
+        scope = condition or drug
+        genotype_key = f"{hla_allele}_genotype" if hla_allele else "genotype"
+        genotype_value = genotype if genotype and genotype.lower() != "missing" else "Unresolved"
+        return [(scope, genotype_key, genotype_value)]
+    if hla_allele or hla_proxy_status:
+        return []
     if hla_proxy_key:
         return [("", "hla_proxy_key", hla_proxy_key)]
     if system:

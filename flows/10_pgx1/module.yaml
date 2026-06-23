@@ -2,19 +2,19 @@ apiVersion: syftbox.openmined.org/v1alpha1
 kind: Module
 metadata:
   name: 10_pgx1
-  version: 0.2.6
+  version: 0.2.7
   authors:
     - madhava@openmined.org
   description: |
     ExVitae PGX-1 report flow. Each genotype file is processed with
-    ghcr.io/madhavajay/exvitae:0.2.4 via `exvitae-report pgx-1`, then
+    ghcr.io/madhavajay/exvitae:0.2.7 via `exvitae-report pgx-1`, then
     per-participant reports and country-grouped aggregates are published.
 spec:
   runner:
     kind: nextflow
     entrypoint: main.nf
     template: dynamic-nextflow
-    image: ghcr.io/madhavajay/exvitae:0.2.4
+    image: ghcr.io/madhavajay/exvitae:0.2.7
   inputs:
     - name: participants
       type: List[GenotypeRecord]
