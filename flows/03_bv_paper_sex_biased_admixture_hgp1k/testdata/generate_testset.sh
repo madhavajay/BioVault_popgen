@@ -11,7 +11,7 @@
 #   WORKERS=8  write participant files in parallel
 #   TEMPLATE_DDNA=/path/to/full_ddna.txt  write full-size files and overlay the
 #     planted sex-biased SNPs at matching chr:pos rows
-#   IMAGE=ghcr.io/madhavajay/biovault-admixture:0.2.5-fast
+#   IMAGE=ghcr.io/madhavajay/biovault-admixture:0.2.6-fast
 #
 # Needs the baked reference at .docker/reference/hgp1k_admixture (reassemble via
 # flows/.../reference/reassemble_reference.sh if missing). Writes <out>/
@@ -21,7 +21,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 OUT_DIR="${1:-${ROOT_DIR}/testdata_sexbias}"
 N="${2:-100}"
-IMAGE="${IMAGE:-ghcr.io/madhavajay/biovault-admixture:0.2.5-fast}"
+IMAGE="${IMAGE:-ghcr.io/madhavajay/biovault-admixture:0.2.6-fast}"
 REF="${ROOT_DIR}/.docker/reference/hgp1k_admixture"
 
 if [ ! -s "${REF}/reference_auto.bed" ]; then

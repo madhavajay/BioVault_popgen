@@ -9,16 +9,21 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl tar && \
     rm -rf /var/lib/apt/lists/*
 
-# plink (1.9, for --bmerge), plink2, bcftools (reference pre-gen), python libs.
+# Pin the exact Bioconda builds whose binaries report:
+#   PLINK v1.9.0-b.8 (22 Oct 2024)
+#   PLINK v2.0.0-a.6.9LM (29 Jan 2025)
+# Bioconda labels the PLINK 1 package 1.90b7.7 even though its binary reports b.8.
 RUN mamba install -y -c conda-forge -c bioconda \
       python=3.11 \
       numpy \
       pandas \
       matplotlib-base \
       scikit-learn \
-      plink \
-      plink2 \
+      plink=1.90b7.7=h18e278d_1 \
+      plink2=2.0.0a.6.9=h9948957_0 \
       bcftools && \
+    plink --version 2>&1 | grep -Fq 'PLINK v1.9.0-b.8 64-bit (22 Oct 2024)' && \
+    plink2 --version 2>&1 | grep -Fq 'PLINK v2.0.0-a.6.9LM 64-bit Intel (29 Jan 2025)' && \
     mamba clean -afy
 
 RUN mkdir -p /opt/admixture && \

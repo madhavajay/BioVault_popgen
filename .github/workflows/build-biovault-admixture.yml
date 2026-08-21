@@ -84,7 +84,7 @@ jobs:
           if [ -z "$v" ]; then
             v="$(sed -nE 's/^VERSION="\$\{VERSION:-([^}]+)\}".*/\1/p' build_admixture_docker.sh | head -1)"
           fi
-          [ -n "$v" ] || v="0.2.5-fast"
+          [ -n "$v" ] || v="0.2.6-fast"
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "sha=sha-$(echo "${{ github.sha }}" | cut -c1-12)" >> "$GITHUB_OUTPUT"
 

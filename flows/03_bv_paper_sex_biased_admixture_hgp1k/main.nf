@@ -20,7 +20,7 @@ if (!params.containsKey('admixture_image')) { params.admixture_image = null }
 if (!params.containsKey('biosynth_image'))  { params.biosynth_image  = null }
 
 def BIOSYNTH_IMAGE  = System.getenv('BIOSYNTH_IMAGE') ?: (params.biosynth_image ?: 'ghcr.io/openmined/biosynth:0.1.32')
-def ADMIXTURE_IMAGE = params.admixture_image ?: 'ghcr.io/madhavajay/biovault-admixture:0.2.5-fast'
+def ADMIXTURE_IMAGE = params.admixture_image ?: 'ghcr.io/madhavajay/biovault-admixture:0.2.6-fast'
 
 def normalizeSex(String raw) { return (raw ?: '').trim() }
 

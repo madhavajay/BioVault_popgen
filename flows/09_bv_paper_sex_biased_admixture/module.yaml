@@ -27,7 +27,7 @@ spec:
     kind: nextflow
     entrypoint: main.nf
     template: dynamic-nextflow
-    image: ghcr.io/madhavajay/biovault-admixture:0.2.5-fast
+    image: ghcr.io/madhavajay/biovault-admixture:0.2.6-fast
   inputs:
     - name: participants
       type: List[GenotypeRecord]

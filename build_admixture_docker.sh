@@ -28,7 +28,7 @@ Examples:
   PACKAGE_NAME=hgp1k_all_sex_bias_pgp FLAVOR=pgpall ./build_admixture_docker.sh --pgp
 
 Environment:
-  VERSION          Image version tag. Defaults to 0.2.5-fast.
+  VERSION          Image version tag. Defaults to 0.2.6-fast.
   ADMIXTURE_VERSION ADMIXTURE binary version. Defaults to 1.4.0.
   ADMIXTURE_URL    ADMIXTURE binary archive URL forwarded to Docker.
   IMAGE_NAME       Output repository.
@@ -67,7 +67,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VERSION="${VERSION:-0.2.5-fast}"
+VERSION="${VERSION:-0.2.6-fast}"
 ADMIXTURE_VERSION="${ADMIXTURE_VERSION:-1.4.0}"
 IMAGE_NAME="${IMAGE_NAME:-ghcr.io/madhavajay/biovault-admixture}"
 PLATFORM="${PLATFORM:-linux/amd64}"
